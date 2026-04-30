@@ -2533,6 +2533,45 @@ class BasePlatformAdapter(ABC):
 
                 # Send the text portion
                 if text_content:
+                    # --- Response Guard (hallucination sanitizer) ---
+                    # Run lumina-response-guard.sh before sending.  The guard
+                    # reads stdin, writes sanitized text to stdout, exits 1 if a
+                    # hallucination pattern was detected (alert sent internally),
+                    # exits 0 if clean.  We always use the stdout as the final
+                    # content so the guard's sanitized version reaches the user.
+                    # On any error (guard missing, permission denied, timeout) we
+                    # fall through with the original text so a bad guard install
+                    # cannot silently drop all responses.
+                    _guard_script = os.path.expanduser(
+                        "~/.skcapstone/agents/lumina/scripts/lumina-response-guard.sh"
+                    )
+                    if os.path.isfile(_guard_script):
+                        try:
+                            import subprocess as _subprocess
+                            _guard_result = await asyncio.to_thread(
+                                lambda: _subprocess.run(
+                                    ["/bin/bash", _guard_script],
+                                    input=text_content,
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=10,
+                                )
+                            )
+                            # Guard stdout is always the safe-to-send version.
+                            # Trust it regardless of exit code (0=clean, 1=detected+sanitized, 2=passthrough).
+                            if _guard_result.stdout:
+                                if _guard_result.returncode == 1:
+                                    logger.warning(
+                                        "[%s] response-guard: hallucination detected, sending sanitized output",
+                                        self.name,
+                                    )
+                                text_content = _guard_result.stdout
+                        except Exception as _guard_err:
+                            logger.warning(
+                                "[%s] response-guard failed (%s) — sending original response",
+                                self.name, _guard_err,
+                            )
+                    # --- End Response Guard ---
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
