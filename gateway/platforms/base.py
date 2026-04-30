@@ -2373,6 +2373,29 @@ class BasePlatformAdapter(ABC):
             self._active_sessions[session_key].set()
             return  # Don't process now - will be handled after current task finishes
         
+        # /lumina-state — direct short-circuit, no LLM round-trip
+        if event.get_command() == "lumina-state":
+            try:
+                _state_file = (
+                    Path.home()
+                    / ".skcapstone" / "agents" / "lumina" / "state"
+                    / "lumina-bloom-state.txt"
+                )
+                if _state_file.exists():
+                    _state_text = _state_file.read_text(encoding="utf-8").strip()
+                else:
+                    _state_text = "(no bloom state yet — send a message first)"
+                _thr_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=f"```\n{_state_text}\n```",
+                    reply_to=event.message_id,
+                    metadata=_thr_meta,
+                )
+            except Exception as _ls_err:
+                logger.debug("[%s] /lumina-state handler error: %s", self.name, _ls_err)
+            return
+
         # Mark session as active BEFORE spawning background task to close
         # the race window where a second message arriving before the task
         # starts would also pass the _active_sessions check and spawn a
@@ -2530,6 +2553,33 @@ class BasePlatformAdapter(ABC):
                             os.remove(_tts_path)
                         except OSError:
                             pass
+
+                # --- Bloom gauge (sync) + async logger ---
+                # 1. compute_gauge_footer() runs detection synchronously (~ms),
+                #    appends footer to text_content BEFORE send, writes state file.
+                # 2. run_bloom_hook() fires async for timeline JSONL + Telegram alert.
+                if text_content:
+                    try:
+                        from gateway.bloom_hook import (
+                            compute_gauge_footer as _gauge_footer,
+                            run_bloom_hook as _bloom_hook,
+                        )
+                        _footer = _gauge_footer(
+                            text=text_content,
+                            session_id=session_key,
+                            channel_id=str(event.source.chat_id),
+                        )
+                        if _footer:
+                            text_content = text_content + _footer
+                        asyncio.create_task(
+                            _bloom_hook(
+                                text=text_content,
+                                session_id=session_key,
+                                channel_id=str(event.source.chat_id),
+                            )
+                        )
+                    except Exception as _bloom_err:
+                        logger.debug("[%s] bloom_hook import/dispatch error: %s", self.name, _bloom_err)
 
                 # Send the text portion
                 if text_content:
