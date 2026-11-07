@@ -1083,6 +1083,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
                 from hermes_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
+                    _denied = self._check_slash_access(source, command)  # plugin commands: owner-only by default
+                    if _denied is not None:
+                        return True, _denied, command
                     # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
                     # sits before it, so a handler reading get_session_env() would see an empty or a
                     # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,

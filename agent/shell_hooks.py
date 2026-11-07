@@ -369,6 +369,9 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
     """Build the closure that ``invoke_hook()`` will call per firing."""
 
     def _callback(**kwargs: Any) -> Optional[dict[str, Any]]:
+        from tools.session_scope import is_owner_session
+        if not is_owner_session():  # no shell hooks at all for non-owner sessions
+            return None
         if spec.event in _TOOL_EVENTS and not spec.matches_tool(kwargs.get("tool_name")):
             return None
         return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs)))

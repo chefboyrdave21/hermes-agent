@@ -612,6 +612,9 @@ class MemoryManager:
         (tool outputs included) go through ``_redact_for_provider`` so secrets are never archived
         verbatim in a provider's store (#115104).
         """
+        from tools.session_scope import is_owner_session
+        if not is_owner_session():  # a non-owner turn must never be written into owner memory
+            return
         providers = list(self._providers)
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
         if not clean_user_content:
@@ -746,6 +749,9 @@ class MemoryManager:
         self._each_provider("on_turn_start failed", _tick)
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
+        from tools.session_scope import is_owner_session
+        if not is_owner_session():
+            return
         messages = _redact_messages_for_egress(messages or [])
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
                             exc_info=True)
@@ -819,6 +825,9 @@ class MemoryManager:
         only to checkpoint (v2+) providers. With ``require_checkpoint`` at least one checkpoint provider
         must succeed — its exception propagates so the caller keeps the uncompressed transcript.
         """
+        from tools.session_scope import is_owner_session
+        if not is_owner_session():  # no pre-compaction memory write for non-owner sessions
+            return ""
         parts = []
         checkpoint_succeeded = False
         messages, evidence_messages = _redact_for_provider(messages or [], evidence_messages)
@@ -860,6 +869,9 @@ class MemoryManager:
     def on_memory_write(self, action: str, target: str, content: str,
                         metadata: Optional[dict[str, Any]] = None) -> None:
         """Notify external providers when the built-in memory tool writes (skips builtin, the source)."""
+        from tools.session_scope import is_owner_session
+        if not is_owner_session():
+            return
         content, metadata = _redact_for_provider(content, dict(metadata or {}))
 
         def _notify(provider: MemoryProvider) -> None:
@@ -941,6 +953,9 @@ class MemoryManager:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
+        from tools.session_scope import is_owner_session
+        if not is_owner_session():
+            return
         task, result = _redact_for_provider(task, result)
         self._each_provider(
             "on_delegation failed",

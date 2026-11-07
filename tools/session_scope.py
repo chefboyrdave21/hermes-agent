@@ -13,12 +13,33 @@ and ONLY the tools in the allowlists below.
 """
 from __future__ import annotations
 
+import logging
 import os
 from contextvars import ContextVar
 from typing import Any, Optional
 
 OWNER_ENV = "HERMES_MEMORY_OWNER"  # "telegram:<user id>,..."
 PUBLIC = "@public"
+logger = logging.getLogger(__name__)
+# Slash commands a non-owner may run. Everything else (state-changing or memory-revealing, including
+# /memory, /skills, /approvals, /yolo, plugin and exec quick commands) is owner-only: default-deny.
+SLASH_ALLOW = frozenset({"help", "whoami"})
+_logged = False
+
+
+def log_owner_config() -> None:
+    """One WARNING when no owner is configured (the owner DM then silently reads as non-owner), else one INFO.
+    Logs counts only, never ids. Called at gateway start and lazily on first resolution."""
+    global _logged
+    if _logged:
+        return
+    _logged = True
+    n = len(_owners())
+    if n == 0:
+        logger.warning("%s is unset: NO session is the owner. Every chat, including the owner DM, runs "
+                       "default-deny (reader channel:<id> / @public, no MEMORY.md, no hooks, no slash admin).", OWNER_ENV)
+    else:
+        logger.info("session scope: %d owner identity(ies) configured via %s", n, OWNER_ENV)
 _DM_TYPES = frozenset({"dm", "direct", "private"})
 
 # Set by cron's run scope: True only for jobs stamped owner_created.
@@ -46,10 +67,30 @@ def _gateway_mode() -> bool:
     return os.environ.get("_HERMES_GATEWAY") == "1"
 
 
+def source_reader(platform: str, chat_id: str, chat_type: str, user_id: str) -> Optional[str]:
+    """Reader for an explicit message source (used before session vars are bound, e.g. slash dispatch)."""
+    platform, chat_id, chat_type, user_id = (str(v or "").strip() for v in (platform, chat_id, chat_type, user_id))
+    platform, chat_type = platform.lower(), chat_type.lower()
+    if platform and chat_type in _DM_TYPES and user_id and f"{platform}:{user_id}" in _owners():
+        return None
+    return f"channel:{chat_id}" if chat_id else PUBLIC
+
+
+def source_is_owner(source: Any) -> bool:
+    log_owner_config()
+    try:
+        plat = getattr(getattr(source, "platform", None), "value", None) or str(getattr(source, "platform", "") or "")
+        return source_reader(plat, getattr(source, "chat_id", ""), str(getattr(source, "chat_type", "") or ""),
+                             getattr(source, "user_id", "")) is None
+    except Exception:
+        return False
+
+
 def session_reader() -> Optional[str]:
     """None = owner scope; else the reader string (``channel:<id>`` or ``@public``)."""
     from gateway.session_context import get_session_env
 
+    log_owner_config()
     g = lambda n: get_session_env(n, "").strip()
     platform = g("HERMES_SESSION_PLATFORM").lower()
     chat_id, chat_type, user_id = g("HERMES_SESSION_CHAT_ID"), g("HERMES_SESSION_CHAT_TYPE").lower(), g("HERMES_SESSION_USER_ID")
