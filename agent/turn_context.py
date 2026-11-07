@@ -1143,8 +1143,21 @@ def build_turn_context(
         )
 
     # System prompt is cached per session for prefix caching.
+    # The frozen prompt embeds MEMORY.md/USER.md/AGENTS.md for the scope it was built under. A turn in a
+    # different scope (another speaker in the same chat, owner vs non-owner) must never reuse it, and a
+    # non-owner turn never restores a stored prompt (it may have been built for the owner).
+    from tools.session_scope import session_reader as _scope_now
+    _scope = _scope_now()
+    _force_build = (agent._cached_system_prompt is not None
+                    and getattr(agent, "_prompt_scope", _scope) != _scope)
+    if _force_build:
+        agent._cached_system_prompt = None
     if agent._cached_system_prompt is None:
-        restore_or_build_system_prompt(agent, system_message, conversation_history)
+        if _force_build or _scope is not None:
+            agent._cached_system_prompt = agent._build_system_prompt(system_message)
+        else:
+            restore_or_build_system_prompt(agent, system_message, conversation_history)
+    agent._prompt_scope = _scope
     active_system_prompt = agent._cached_system_prompt
 
     # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same
