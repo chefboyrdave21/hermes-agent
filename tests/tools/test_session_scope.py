@@ -46,7 +46,7 @@ def test_scope_matrix(monkeypatch):
 
 
 def test_unbound_gateway_turn_is_non_owner(monkeypatch):
-    monkeypatch.setattr(sc, "_session_context_engaged", False)
+    sc.clear_session_vars([])
     assert ss.session_reader() is None  # plain CLI process
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
     assert ss.session_reader() == ss.PUBLIC  # goal / wake / webhook turn with nothing bound
@@ -62,7 +62,8 @@ def test_cron_owner_stamp(monkeypatch):
         ss.cron_owner_job.reset(tok)
 
 
-def test_delegated_child_inherits_scope_and_context_less_thread_is_non_owner():
+def test_delegated_child_inherits_scope_and_context_less_thread_is_non_owner(monkeypatch):
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
     import concurrent.futures as cf
     _group()
     ctx = contextvars.copy_context()
