@@ -189,3 +189,12 @@ def disable_lazy_stt_install():
     """
     with patch("tools.transcription_tools._try_lazy_install_stt", return_value=False):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _citation_gate_off_by_default(monkeypatch):
+    """Existing background-review write tests predate the citation gate (SKMEM-P4-04) and must
+    not read a real skmemory store; test_skill_citation_gate.py turns it back on explicitly."""
+    from tools import skill_citation_gate
+
+    monkeypatch.setattr(skill_citation_gate, "_enabled", lambda: False)
