@@ -699,8 +699,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
 
     def _handler(args: dict, **kwargs) -> Any:
         # Memory audience boundary (SKMEM-P0-19): force the per-chat reader before ANY other work; the model's value is discarded.
-        from tools.mcp_reader_scope import scope_tool_args
-        args, refusal = scope_tool_args(server_name, tool_name, args)
+        from tools.session_scope import mcp_refusal
+        refusal, _ = mcp_refusal(server_name, tool_name, None, check_schema=False)  # allowlist, before any spawn
         if refusal is not None:
             return tool_error(refusal)
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
@@ -715,6 +715,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
             for charge in booked:
                 charge.refund()
             return error
+        # Capability check against the live schema, then force the reader (the model's value is discarded).
+        refusal, reader = mcp_refusal(server_name, tool_name, getattr(server, "_tools", None))
+        if refusal is not None:
+            return tool_error(refusal)
+        if reader is not None:
+            args = {**(args if isinstance(args, dict) else {}), "reader": reader}
         # Only a tool annotated readOnlyHint=True is replayed after session expiry; a 401 is always
         # pre-dispatch so the auth recoverer keeps its retry for every tool.
         read_only = _tool_is_read_only(server_name, tool_name)
@@ -759,6 +765,9 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
     payload, ``required`` validated before any transport work."""
     def _factory(server_name: str, tool_timeout: float):
         def _handler(args: dict, **kwargs) -> str:
+            from tools.session_scope import is_owner_session
+            if not is_owner_session():  # resources/prompts are not reader-filtered
+                return tool_error(f"{op} is not available in this chat")
             from tools import mcp_tool_discovery as _discovery  # lazy: import cycle
             server = _discovery._get_connected_server_for_call(server_name)
             if not server or not server.session:

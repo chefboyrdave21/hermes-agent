@@ -2373,6 +2373,8 @@ class _CronRunScope:
             record_session_cwd(self.task_id, self.workdir)
         self._cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
         self._cron_session_token = None
+        self._cron_owner_token = None
+        self._job = job
         self._non_dispatcher_token = None
         self._spend_token = None
 
@@ -2380,6 +2382,8 @@ class _CronRunScope:
         # Scope cron approval policy; exit() RESETS via token (pinning "" would suppress the legacy
         # os.environ fallback used by standalone entrypoints/tests).
         self._cron_session_token = self._cron_session_var.set("1")
+        from tools.session_scope import cron_owner_job
+        self._cron_owner_token = cron_owner_job.set(self._job.get("owner_created") is True)
         # Mark NOT the kanban worker: a worker's cronjob(action="run") lands here with
         # HERMES_KANBAN_TASK in env, and an unrelated job could close the worker's task. Must be a
         # ContextVar, NOT an os.environ clear (env is shared with the worker heartbeat and
@@ -2395,6 +2399,9 @@ class _CronRunScope:
 
         clear_session_cwd(self.task_id)
         clear_session_vars(self._ctx_tokens)  # also clears _SESSION_CWD
+        if self._cron_owner_token is not None:
+            from tools.session_scope import cron_owner_job
+            cron_owner_job.reset(self._cron_owner_token)
         if self._cron_session_token is not None:
             self._cron_session_var.reset(self._cron_session_token)
         if self._non_dispatcher_token is not None:

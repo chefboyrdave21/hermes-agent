@@ -345,6 +345,10 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
 
 def _coerced(name: str, executor: InlineToolExecutor) -> InlineToolExecutor:
     def _exec(agent, args: dict, ctx: InlineToolContext) -> Any:
+        from tools.session_scope import native_refusal
+        if (refusal := native_refusal(name)) is not None:  # default-deny for non-owner sessions
+            from tools.registry import tool_error
+            return tool_error(refusal)
         return executor(agent, coerce_tool_args(name, args), ctx)
     return _exec
 

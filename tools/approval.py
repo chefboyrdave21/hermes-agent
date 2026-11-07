@@ -388,6 +388,9 @@ def is_current_session_yolo_enabled() -> bool:
 def _yolo_active() -> bool:
     """CLI ``--yolo`` (process-scoped, frozen at import) or gateway ``/yolo``
     (session-scoped). Hardline / deny-rule floors run BEFORE this everywhere."""
+    from tools.session_scope import is_owner_session
+    if not is_owner_session():
+        return False  # SKMEM-P0-19/22: no yolo, session or unattended, for a non-owner turn
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
         return True
     from gateway.session_finite import unattended_turn

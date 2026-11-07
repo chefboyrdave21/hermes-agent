@@ -359,7 +359,8 @@ class MemoryManager:
 
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
         """Merge non-empty prefetch context from all providers (failures are non-fatal)."""
-        if self._fork_turn_hooks_suppressed():
+        from tools.session_scope import is_owner_session
+        if self._fork_turn_hooks_suppressed() or not is_owner_session():
             return ""
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query or not self._owner_allows("prefetch"):
@@ -608,6 +609,9 @@ class MemoryManager:
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
         """Route a tool call to its provider; returns a JSON string (tool_error on failure)."""
+        from tools.session_scope import is_owner_session
+        if not is_owner_session():
+            return tool_error(f"{tool_name} is not available in this chat")
         provider = self._tool_to_provider.get(tool_name)
         if provider is None:
             return tool_error(f"No memory provider handles tool '{tool_name}'")

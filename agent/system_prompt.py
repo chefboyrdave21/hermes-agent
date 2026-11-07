@@ -537,6 +537,9 @@ def _memory_parts(agent: Any) -> list[str]:
     the same check ``inject_memory_provider_tools`` uses, so we never advertise
     tools the toolset config gated off)."""
     parts: list[str] = []
+    from tools.session_scope import is_owner_session
+    if not is_owner_session():  # no MEMORY.md / USER.md / external provider block outside the owner DM
+        return parts
     if agent._memory_store:
         for enabled, kind in ((agent._memory_enabled, "memory"), (agent._user_profile_enabled, "user")):
             block = agent._memory_store.format_for_system_prompt(kind) if enabled else None

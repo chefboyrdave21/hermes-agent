@@ -1806,6 +1806,14 @@ def _next_run_or_reject_past_oneshot(
     return next_run_at
 
 
+def _created_by_owner() -> bool:
+    try:
+        from tools.session_scope import is_owner_session
+        return is_owner_session()
+    except Exception:
+        return False
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1928,6 +1936,9 @@ def create_job(
         "failure_streak": 0,
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        # Provenance for memory scope: True only when created from an owner session (SKMEM-P0-19). A job
+        # without this stamp runs as a non-owner (@public) in the gateway.
+        "owner_created": _created_by_owner(),
         "enabled_toolsets": f["enabled_toolsets"],
         "workdir": f["workdir"],
     }

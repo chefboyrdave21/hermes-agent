@@ -914,6 +914,9 @@ def _collect_pre_llm_call_context(
     without a message is ignored, as for ``pre_tool_call``."""
     if getattr(agent, "_persist_disabled", False):
         return ""
+    from tools.session_scope import is_owner_session
+    if not is_owner_session():  # private pre_llm_call hooks (mail, activity, vault) never run for non-owners
+        return ""
     try:
         from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
@@ -1063,6 +1066,9 @@ def _memory_turn_start_and_prefetch(
     before the tool loop (skipped on trivial prompts with no semantic signal).
     Returns the prefetch text (``""`` when nothing was injected)."""
     if not agent._memory_manager:
+        return ""
+    from tools.session_scope import is_owner_session
+    if not is_owner_session():  # no external memory prefetch for non-owners
         return ""
     _query = _memory_query_text(original_user_message)
     # The author rides along so a provider can attribute THIS turn, not whoever opened the session.

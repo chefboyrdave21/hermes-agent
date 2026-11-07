@@ -960,6 +960,9 @@ class GatewaySlashCommandsMixin(
         """Handle /yolo — toggle dangerous command approval bypass for this session only. The flag is
         persisted on the routing entry so it survives a gateway restart."""
         from tools.approval_yolo import toggle_session_yolo
+        from tools.session_scope import is_owner_session
+        if not is_owner_session():
+            return EphemeralReply("/yolo is owner-only.")
         session_key = self._session_key_for_source(event.source)
         persisted, persist = False, None
         if (store := self.session_store) is not None:
