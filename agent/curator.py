@@ -45,6 +45,7 @@ def load_state() -> dict[str, Any]:
     base: dict[str, Any] = {
         "last_run_at": None, "last_run_duration_seconds": None, "last_run_summary": None,
         "last_run_summary_shown_at": None, "last_report_path": None, "paused": False, "run_count": 0,
+        "rejected_uncited": 0, "accepted_lessons": 0,
     }
     path = _state_file()
     try:
@@ -431,6 +432,12 @@ CURATOR_REVIEW_PROMPT = (
     "the deterministic staleness pass's job, never this one's. "
     "`absorbed_into` drives cron-job skill-reference migration — "
     "guessing from your YAML summary after the fact is fragile.\n"
+    "Citations (ENFORCED when the curator citation gate is on, the default): every create, patch "
+    "or write_file op must carry source_ids (ids of existing memories or outcome ledger events "
+    "that support the change, or skill:<name> for an existing skill you are merging) and quote "
+    "(>= 20 characters copied verbatim from a cited memory or skill; a ledger event never "
+    "satisfies the quote). An op without both is refused and counted as rejected_uncited; do not "
+    "invent ids.\n"
     "  You have NO terminal access in this pass — every filesystem mutation "
     "goes through skill_manage above so it is ledgered and rollback-able "
     "(issue #96962). Reading files works through skill_view (including "
