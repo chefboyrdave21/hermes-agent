@@ -267,12 +267,6 @@ def _consolidation_patch(source_ids, quote):
         reset_current_write_origin(token)
 
 
-def test_skill_citation_accepted_with_real_quote(umbrella):
-    r = _consolidation_patch(["skill:umb"], PATCH_QUOTE)
-    assert r["success"] is True, r
-    assert umbrella["stored"][0]["cited_ids"] == ["skill:umb"]
-
-
 def test_skill_citation_nonexistent_skill_refused(umbrella):
     assert _consolidation_patch(["skill:ghost"], PATCH_QUOTE)["success"] is False
 
@@ -294,3 +288,93 @@ def test_consolidation_and_refine_prompts_carry_the_instruction():
         br._COMBINED_REVIEW_PROMPT,
     ):
         assert "source_ids" in p and "quote" in p and "skill:<name>" in p
+
+
+# --- round 2: no self-citation, no citing a skill written earlier in the batch, body only ---
+
+
+def test_skill_cannot_cite_itself(umbrella):
+    r = _consolidation_patch(["skill:umb"], PATCH_QUOTE)
+    assert r["success"] is False and "rejected_uncited" in r["error"]
+    assert umbrella["stored"] == []
+
+
+def test_skill_citation_of_another_skill_still_works(umbrella):
+    from tools.skill_manager_tool import skill_manage
+
+    other = UMBRELLA.replace("name: umb", "name: other").replace(
+        "Step 2.", "Other step."
+    )
+    umbrella["gate"]._enabled = lambda: False
+    assert json.loads(skill_manage(action="create", name="other", content=other))[
+        "success"
+    ]
+    umbrella["gate"]._enabled = lambda: True
+    r = _consolidation_patch(["skill:other"], PATCH_QUOTE)
+    assert r["success"] is True, r
+    assert umbrella["stored"][0]["cited_ids"] == ["skill:other"]
+
+
+def test_frontmatter_is_not_a_quote_source(umbrella):
+    from tools.skill_manager_tool import skill_manage
+
+    other = (
+        "---\nname: other\ndescription: Use when the frontmatter line is quoted verbatim here.\n"
+        "---\n# Other\nBody text.\n"
+    )
+    umbrella["gate"]._enabled = lambda: False
+    assert json.loads(skill_manage(action="create", name="other", content=other))[
+        "success"
+    ]
+    umbrella["gate"]._enabled = lambda: True
+    r = _consolidation_patch(
+        ["skill:other"], "Use when the frontmatter line is quoted verbatim here."
+    )
+    assert r["success"] is False
+    assert umbrella["gate"].skill_source("other").lstrip().startswith("# Other")
+
+
+LONG_BODY = "Always check the lock file before you deploy anything."
+LONG_SKILL = SKILL + LONG_BODY + "\n"
+
+
+def test_batch_cannot_cite_a_skill_written_earlier_in_the_batch(env, monkeypatch):
+    from tools.skill_manager_tool import skill_manage
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    monkeypatch.setattr(
+        env["gate"], "memory_resolver", lambda: {"mem-real-1": SOURCE}.get
+    )
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        r = json.loads(
+            skill_manage(
+                action="",
+                name="",
+                operations=[
+                    {
+                        "name": "probe",
+                        "action": "create",
+                        "content": LONG_SKILL,
+                        "source_ids": ["mem-real-1"],
+                        "quote": QUOTE,
+                    },
+                    {
+                        "name": "probe",
+                        "action": "write_file",
+                        "file_path": "references/a.md",
+                        "file_content": "a",
+                        "source_ids": ["skill:probe"],
+                        "quote": LONG_BODY,
+                    },
+                ],
+            )
+        )
+    finally:
+        reset_current_write_origin(token)
+    assert r["success"] is False and "rejected_uncited" in r["error"]
+    assert not (env["skills"] / "probe").exists()

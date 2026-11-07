@@ -265,6 +265,8 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
         results = []
         rollback_failed = False
         token = _smt._skill_gate_bypass.set(True)
+        from tools import skill_citation_gate
+        cite_token = skill_citation_gate.begin_batch()
         try:
             for i, op in enumerate(operations):
                 raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
@@ -293,6 +295,7 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                 entry.update({k: parsed[k] for k in _ADVISORY_KEYS if parsed.get(k) is not None})
                 results.append(entry)
         finally:
+            skill_citation_gate.end_batch(cite_token)
             _smt._skill_gate_bypass.reset(token)
             if rollback_failed:
                 # Keep the snapshots so the operator can still recover by hand.

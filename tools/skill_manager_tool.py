@@ -835,6 +835,7 @@ def skill_manage(
                 action, name, result, file_path=file_path, absorbed_into=absorbed_into,
                 task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
             if cite_verdict is not None:
+                skill_citation_gate.note_written(name)
                 skill_citation_gate.record_lesson(
                     action, name, cite_verdict, quote,
                     new_string or content or file_content or "")
