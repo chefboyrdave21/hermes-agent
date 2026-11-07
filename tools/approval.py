@@ -323,7 +323,8 @@ def is_current_session_yolo_enabled() -> bool:
 def _yolo_active() -> bool:
     """CLI ``--yolo`` (process-scoped, frozen at import) or gateway ``/yolo``
     (session-scoped). Hardline / deny-rule floors run BEFORE this everywhere."""
-    return _YOLO_MODE_FROZEN or is_current_session_yolo_enabled()
+    from tools.session_scope import is_owner_session
+    return (_YOLO_MODE_FROZEN or is_current_session_yolo_enabled()) and is_owner_session()
 
 
 def _permanent_set() -> set:
