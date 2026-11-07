@@ -774,7 +774,7 @@ class TestByteLayerBinaryDetection:
     def test_file_containing_real_replacement_char_is_text(self, file_ops):
         # A log file that legitimately stores U+FFFD is valid UTF-8. The old
         # text-layer check could not tell it from transport damage.
-        assert file_ops._is_likely_binary_bytes("log: \ufffd bad byte\n".encode("utf-8")) is False
+        assert file_ops._is_likely_binary_bytes("log: \ufffd bad byte\n".encode()) is False
 
     def test_nul_byte_is_binary(self, file_ops):
         assert file_ops._is_likely_binary_bytes(b"MZ\x00\x01text") is True

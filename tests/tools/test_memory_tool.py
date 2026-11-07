@@ -882,7 +882,7 @@ class TestBomToleranceInMemoryFiles:
 
     def test_bom_is_stripped_from_first_entry(self, store, tmp_path):
         path = store._path_for("memory")
-        path.write_bytes("\ufeffFirst fact.".encode("utf-8"))
+        path.write_bytes("\ufeffFirst fact.".encode())
         raw, read_ok = MemoryStore._read_raw_checked(path)
         assert read_ok is True
         assert not raw.startswith("\ufeff")
@@ -890,7 +890,7 @@ class TestBomToleranceInMemoryFiles:
 
     def test_bom_file_add_keeps_existing_entry_intact(self, store):
         path = store._path_for("memory")
-        path.write_bytes("\ufeffExisting BOM fact.".encode("utf-8"))
+        path.write_bytes("\ufeffExisting BOM fact.".encode())
         result = store.add("memory", "A second fact.")
         assert result["success"] is True
         text = path.read_text(encoding="utf-8")
