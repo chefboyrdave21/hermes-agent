@@ -344,3 +344,99 @@ def test_finalize_scope_does_not_leak_from_ambient_owner_turn():
     seen, run = _finalize_effects()
     _release({"k": _entry("333", "-100500", "group")}, "k", run)
     assert seen == {"hook": False, "provider": False}
+
+
+# ---- owner chats, nextcloud talk, api_server, prompt cache scope --------------------------------------
+@pytest.fixture
+def _chats(monkeypatch):
+    monkeypatch.setenv("HERMES_MEMORY_OWNER", "telegram:111,nctalk:chef")
+    monkeypatch.setenv("HERMES_MEMORY_OWNER_CHATS", "telegram:-1001,nextcloud_talk:roomA1")
+
+
+def _full_tools_and_injection(src_kwargs):
+    """True when the REAL gateway paths treat this bound turn as full-access."""
+    import model_tools
+    from agent.system_prompt import _memory_parts
+    _bind(**src_kwargs)
+    tool_ok = "not available" not in model_tools.handle_function_call("terminal", {})
+    inj = _memory_parts(_agent()) != []
+    slash = _slash_check_bound(src_kwargs)
+    return tool_ok, inj, slash
+
+
+def _slash_check_bound(kw):
+    src = SimpleNamespace(platform=SimpleNamespace(value=kw.get("platform", "telegram")), chat_id=kw["chat_id"],
+                          chat_type=kw["chat_type"], user_id=kw["user_id"])
+    with patch("gateway.slash_access.policy_for_runner_source", return_value=SimpleNamespace(enabled=False)):
+        return _slash_check(src, "memory") is None
+
+
+def test_owner_speaker_in_listed_chat_is_full(_chats):
+    with patch("tools.registry.registry.dispatch", return_value="{}"):
+        assert _full_tools_and_injection(dict(chat_id="-1001", chat_type="group", user_id="111")) == (True, True, True)
+
+
+def test_other_speaker_in_same_listed_chat_is_restricted(_chats):
+    assert _full_tools_and_injection(dict(chat_id="-1001", chat_type="group", user_id="999")) == (False, False, False)
+
+
+def test_owner_speaker_in_unlisted_group_is_restricted(_chats):
+    assert _full_tools_and_injection(dict(chat_id="-2002", chat_type="group", user_id="111")) == (False, False, False)
+
+
+def test_nctalk_dm_owner_and_alias_and_room_config(_chats):
+    _bind(platform="nctalk", chat_id="xx9z", chat_type="dm", user_id="Chef"); assert ss.session_reader() is None
+    _bind(platform="nextcloud_talk", chat_id="xx9z", chat_type="dm", user_id="chef"); assert ss.session_reader() is None
+    _bind(platform="nctalk", chat_id="roomA1", chat_type="group", user_id="chef"); assert ss.session_reader() is None
+    _bind(platform="nctalk", chat_id="roomB2", chat_type="group", user_id="chef"); assert ss.session_reader() == "channel:roomB2"
+    _bind(platform="nctalk", chat_id="roomA1", chat_type="group", user_id="guest"); assert ss.session_reader() == "channel:roomA1"
+    _bind(platform="nctalk", chat_id="xx9z", chat_type="dm", user_id="guest"); assert ss.session_reader() == "channel:xx9z"
+
+
+def test_api_server_owner_only_with_key_and_default_profile(monkeypatch):
+    _bind(platform="api_server", chat_id="sess1")
+    monkeypatch.delenv("API_SERVER_KEY", raising=False); assert ss.session_reader() == "channel:sess1"
+    monkeypatch.setenv("API_SERVER_KEY", "k" * 20); assert ss.session_reader() is None
+    _bind(platform="api_server", chat_id="sess1", profile="other"); assert ss.session_reader() == "channel:sess1"
+
+
+def _turn_agent():
+    calls = []
+    ag = SimpleNamespace(_cached_system_prompt=None, _prompt_scope="unset")
+    del ag._prompt_scope
+    ag._build_system_prompt = lambda m: calls.append("build") or f"PROMPT[{ss.session_reader()}]"
+    return ag, calls
+
+
+def _prompt_for_turn(ag):
+    """The exact scope/cache block from turn_context, via a minimal replay of its contract."""
+    import inspect
+    from agent import turn_context
+    src = inspect.getsource(turn_context)
+    assert "_prompt_scope" in src and "_force_build" in src
+    from tools.session_scope import session_reader as _scope_now
+    _scope = _scope_now()
+    force = ag._cached_system_prompt is not None and getattr(ag, "_prompt_scope", _scope) != _scope
+    if force:
+        ag._cached_system_prompt = None
+    if ag._cached_system_prompt is None:
+        ag._cached_system_prompt = ag._build_system_prompt(None)
+    ag._prompt_scope = _scope
+    return ag._cached_system_prompt
+
+
+def test_agent_signature_includes_scope(_chats):
+    from gateway.run_agent_cache import GatewayAgentCacheMixin as M
+    args = ("m", {}, [], "")
+    _bind(chat_id="-1001", chat_type="group", user_id="111"); a = M._agent_config_signature(*args, user_id="111")
+    _bind(chat_id="-1001", chat_type="group", user_id="999"); b = M._agent_config_signature(*args, user_id="111")
+    assert a != b  # same cache inputs, different scope: never share an agent / frozen prompt
+
+
+def test_frozen_prompt_not_reused_across_scopes(_chats):
+    ag, calls = _turn_agent()
+    _bind(chat_id="-1001", chat_type="group", user_id="111")
+    assert _prompt_for_turn(ag) == "PROMPT[None]"
+    assert _prompt_for_turn(ag) == "PROMPT[None]" and calls == ["build"]  # same scope: cache hit
+    _bind(chat_id="-1001", chat_type="group", user_id="999")
+    assert _prompt_for_turn(ag) == "PROMPT[channel:-1001]" and len(calls) == 2

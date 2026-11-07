@@ -19,8 +19,11 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Optional
 
-OWNER_ENV = "HERMES_MEMORY_OWNER"  # "telegram:<user id>,..."
+OWNER_ENV = "HERMES_MEMORY_OWNER"  # speakers: "telegram:<user id>,nctalk:<nextcloud user id>,..."
+OWNER_CHATS_ENV = "HERMES_MEMORY_OWNER_CHATS"  # private owner-only chats: "telegram:-100123,nctalk:<room token>,..."
+API_KEY_ENV = "API_SERVER_KEY"
 PUBLIC = "@public"
+_DM_TYPES = frozenset({"dm", "direct", "private"})
 logger = logging.getLogger(__name__)
 # Slash commands a non-owner may run. Everything else (state-changing or memory-revealing, including
 # /memory, /skills, /approvals, /yolo, plugin and exec quick commands) is owner-only: default-deny.
@@ -39,7 +42,7 @@ def declared_scope(source: Any = None):
         plat = getattr(getattr(source, "platform", None), "value", None) or str(getattr(source, "platform", "") or "")
         try:
             reader = source_reader(plat, getattr(source, "chat_id", ""), str(getattr(source, "chat_type", "") or ""),
-                                   getattr(source, "user_id", ""))
+                                   getattr(source, "user_id", ""), getattr(source, "profile", "") or "")
         except Exception:
             reader = PUBLIC
     tok = _override.set((reader,))
@@ -61,8 +64,10 @@ def log_owner_config() -> None:
         logger.warning("%s is unset: NO session is the owner. Every chat, including the owner DM, runs "
                        "default-deny (reader channel:<id> / @public, no MEMORY.md, no hooks, no slash admin).", OWNER_ENV)
     else:
-        logger.info("session scope: %d owner identity(ies) configured via %s", n, OWNER_ENV)
-_DM_TYPES = frozenset({"dm", "direct", "private"})
+        logger.info("session scope: %d owner identity(ies) via %s, %d owner chat(s) via %s", n, OWNER_ENV,
+                    len(_owner_chats()), OWNER_CHATS_ENV)
+
+
 
 # Set by cron's run scope: True only for jobs stamped owner_created.
 cron_owner_job: ContextVar[bool] = ContextVar("HERMES_CRON_OWNER_JOB", default=False)
@@ -81,20 +86,43 @@ NATIVE_ALLOW = frozenset({
 })
 
 
+def _canon_platform(platform: str) -> str:
+    p = (platform or "").strip().lower()
+    return "nctalk" if p in ("nextcloud_talk", "nextcloud-talk") else p
+
+
+def _canon_entry(entry: str, lower_id: bool) -> str:
+    plat, _, ident = entry.strip().partition(":")
+    ident = ident.strip()
+    return f"{_canon_platform(plat)}:{ident.lower() if lower_id else ident}"
+
+
 def _owners() -> frozenset[str]:
-    return frozenset(p.strip().lower() for p in os.environ.get(OWNER_ENV, "").split(",") if p.strip())
+    return frozenset(_canon_entry(p, True) for p in os.environ.get(OWNER_ENV, "").split(",") if p.strip())
+
+
+def _owner_chats() -> frozenset[str]:
+    return frozenset(_canon_entry(p, False) for p in os.environ.get(OWNER_CHATS_ENV, "").split(",") if p.strip())
 
 
 def _gateway_mode() -> bool:
     return os.environ.get("_HERMES_GATEWAY") == "1"
 
 
-def source_reader(platform: str, chat_id: str, chat_type: str, user_id: str) -> Optional[str]:
-    """Reader for an explicit message source (used before session vars are bound, e.g. slash dispatch)."""
+def source_reader(platform: str, chat_id: str, chat_type: str, user_id: str, profile: str = "") -> Optional[str]:
+    """Reader for an explicit message source. Owner = the speaker is in HERMES_MEMORY_OWNER AND the chat is a
+    DM or is listed in HERMES_MEMORY_OWNER_CHATS (a private chat where only the owner and the agent talk).
+    Any other speaker in an owner chat is non-owner for that turn. api_server: owner iff API_SERVER_KEY is set
+    (the adapter refuses to start without it and 401s every request that lacks it) and the request is not for a
+    named profile (profile keys belong to other principals)."""
     platform, chat_id, chat_type, user_id = (str(v or "").strip() for v in (platform, chat_id, chat_type, user_id))
-    platform, chat_type = platform.lower(), chat_type.lower()
-    if platform and chat_type in _DM_TYPES and user_id and f"{platform}:{user_id}" in _owners():
-        return None
+    plat, chat_type = _canon_platform(platform), chat_type.lower()
+    if plat == "api_server":
+        if os.environ.get(API_KEY_ENV, "").strip() and (profile or "").strip().lower() in ("", "default"):
+            return None
+    elif plat and user_id and f"{plat}:{user_id.lower()}" in _owners():
+        if chat_type in _DM_TYPES or (chat_id and f"{plat}:{chat_id}" in _owner_chats()):
+            return None
     return f"channel:{chat_id}" if chat_id else PUBLIC
 
 
@@ -103,7 +131,7 @@ def source_is_owner(source: Any) -> bool:
     try:
         plat = getattr(getattr(source, "platform", None), "value", None) or str(getattr(source, "platform", "") or "")
         return source_reader(plat, getattr(source, "chat_id", ""), str(getattr(source, "chat_type", "") or ""),
-                             getattr(source, "user_id", "")) is None
+                             getattr(source, "user_id", ""), getattr(source, "profile", "") or "") is None
     except Exception:
         return False
 
@@ -118,7 +146,6 @@ def session_reader() -> Optional[str]:
     g = lambda n: get_session_env(n, "").strip()
     platform = g("HERMES_SESSION_PLATFORM").lower()
     chat_id, chat_type, user_id = g("HERMES_SESSION_CHAT_ID"), g("HERMES_SESSION_CHAT_TYPE").lower(), g("HERMES_SESSION_USER_ID")
-    owners = _owners()
 
     if g("HERMES_CRON_SESSION") == "1":
         if cron_owner_job.get():
@@ -129,9 +156,7 @@ def session_reader() -> Optional[str]:
         return None  # local CLI/TUI/desktop/API process with no messaging identity: the operator
     if _gateway_mode() and not platform and not chat_id:
         return PUBLIC  # gateway turn with nothing bound (goal, wake, webhook): NOT the operator
-    if platform and chat_type in _DM_TYPES and user_id and f"{platform}:{user_id}" in owners:
-        return None
-    return f"channel:{chat_id}" if chat_id else PUBLIC
+    return source_reader(platform, chat_id, chat_type, user_id, g("HERMES_SESSION_PROFILE"))
 
 
 def is_owner_session() -> bool:

@@ -44,6 +44,14 @@ def _tuple_agent(entry: Any) -> Any:
     return entry[0] if isinstance(entry, tuple) and entry else None
 
 
+def _scope_key() -> str:
+    try:
+        from tools.session_scope import session_reader
+        return str(session_reader())
+    except Exception:
+        return "?"
+
+
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
 
@@ -136,6 +144,8 @@ class GatewayAgentCacheMixin:
                 # skip_context_files changes the agent's frozen system prompt (context files in vs out):
                 # a toggled edit must rebuild the cached agent, not silently reuse it.
                 bool(skip_context_files),
+                # memory scope: the frozen prompt carries owner-only blocks (MEMORY.md, AGENTS.md)
+                _scope_key(),
             ],
             sort_keys=True, default=str,
         )
