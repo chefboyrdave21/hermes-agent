@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Optional
 
@@ -25,6 +26,27 @@ logger = logging.getLogger(__name__)
 # /memory, /skills, /approvals, /yolo, plugin and exec quick commands) is owner-only: default-deny.
 SLASH_ALLOW = frozenset({"help", "whoami"})
 _logged = False
+# Declared scope for work that runs OUTSIDE a bound session (finalize, expiry, shutdown cleanup): a 1-tuple
+# ``(reader,)`` resolved from the session being finalized, never from whatever the thread happens to hold.
+_override: ContextVar[Optional[tuple]] = ContextVar("HERMES_SCOPE_OVERRIDE", default=None)
+
+
+@contextmanager
+def declared_scope(source: Any = None):
+    """Run a block under the scope of ``source`` (a stored session origin). ``None``/unknown => non-owner."""
+    reader = PUBLIC
+    if source is not None:
+        plat = getattr(getattr(source, "platform", None), "value", None) or str(getattr(source, "platform", "") or "")
+        try:
+            reader = source_reader(plat, getattr(source, "chat_id", ""), str(getattr(source, "chat_type", "") or ""),
+                                   getattr(source, "user_id", ""))
+        except Exception:
+            reader = PUBLIC
+    tok = _override.set((reader,))
+    try:
+        yield reader
+    finally:
+        _override.reset(tok)
 
 
 def log_owner_config() -> None:
@@ -91,6 +113,8 @@ def session_reader() -> Optional[str]:
     from gateway.session_context import get_session_env
 
     log_owner_config()
+    if (ov := _override.get()) is not None:
+        return ov[0]
     g = lambda n: get_session_env(n, "").strip()
     platform = g("HERMES_SESSION_PLATFORM").lower()
     chat_id, chat_type, user_id = g("HERMES_SESSION_CHAT_ID"), g("HERMES_SESSION_CHAT_TYPE").lower(), g("HERMES_SESSION_USER_ID")

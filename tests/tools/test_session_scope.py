@@ -281,3 +281,66 @@ def test_owner_config_logging_no_ids(monkeypatch, caplog):
         ss.log_owner_config()
     msgs = " ".join(r.getMessage() for r in caplog.records)
     assert "1 owner" in msgs and "111" not in msgs
+
+
+# ---- finalize / expiry / shutdown run outside a bound session: scope comes from the stored session ----
+def _release(entries, key, fn):
+    from gateway.run_agent_cache import GatewayAgentCacheMixin
+    runner = SimpleNamespace(session_store=SimpleNamespace(_entries=entries))
+    GatewayAgentCacheMixin._run_release_in_profile_scope(runner, fn, (), key)
+
+
+def _entry(user, chat, ctype):
+    return SimpleNamespace(origin=_src(user, chat, ctype))
+
+
+def _finalize_effects():
+    """What a finalize does here: the shell session-end hook and the memory provider commit."""
+    from agent import shell_hooks
+    from agent.memory_manager import MemoryManager
+    seen = {"hook": False, "provider": False}
+    spec = SimpleNamespace(event="on_session_end", command="x.sh", matches_tool=lambda n: True)
+    mm = MemoryManager(); prov = MagicMock(); prov.name = "p"
+    prov.on_session_end.side_effect = lambda m: seen.__setitem__("provider", True)
+    mm._providers = [prov]
+
+    def run():
+        with patch.object(shell_hooks, "_spawn", side_effect=lambda *a: seen.__setitem__("hook", True) or {}), \
+                patch.object(shell_hooks, "_evaluate_result", return_value=None):
+            shell_hooks._make_callback(spec)(session_id="s")
+        mm.on_session_end([{"role": "user", "content": "x"}])
+    return seen, run
+
+
+def test_finalize_owner_dm_runs_hook_and_sync(monkeypatch):
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    sc.clear_session_vars([])  # nothing bound, exactly like a finalize on a worker thread
+    seen, run = _finalize_effects()
+    _release({"k": _entry("111", "111", "dm")}, "k", run)
+    assert seen == {"hook": True, "provider": True}
+
+
+def test_finalize_group_session_does_not(monkeypatch):
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    sc.clear_session_vars([])
+    seen, run = _finalize_effects()
+    _release({"k": _entry("333", "-100500", "group")}, "k", run)
+    assert seen == {"hook": False, "provider": False}
+
+
+def test_finalize_unbound_or_unknown_session_does_not(monkeypatch):
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    sc.clear_session_vars([])
+    seen, run = _finalize_effects()
+    _release({}, "missing-key", run)          # session key with no stored entry
+    run_unkeyed = _finalize_effects()
+    _release({}, None, run_unkeyed[1])        # no key at all, nothing bound
+    assert seen == {"hook": False, "provider": False}
+    assert run_unkeyed[0] == {"hook": False, "provider": False}
+
+
+def test_finalize_scope_does_not_leak_from_ambient_owner_turn():
+    _chef_dm()  # an owner turn is ambient, but the session being finalized is a group
+    seen, run = _finalize_effects()
+    _release({"k": _entry("333", "-100500", "group")}, "k", run)
+    assert seen == {"hook": False, "provider": False}
