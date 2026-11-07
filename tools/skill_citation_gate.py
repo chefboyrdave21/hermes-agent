@@ -93,7 +93,10 @@ _FRONTMATTER = re.compile(r"\A\s*---\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTA
 
 def _body(text: str) -> str:
     """SKILL.md without its YAML frontmatter: only the body is quotable."""
-    return _FRONTMATTER.sub("", text, count=1)
+    if not text.lstrip().startswith("---"):
+        return text
+    # An unterminated frontmatter block has no body to quote: return nothing, not the file.
+    return _FRONTMATTER.sub("", text, count=1) if _FRONTMATTER.match(text) else ""
 
 
 # Skills written so far in the current batch (None outside a batch): a batch may not cite a

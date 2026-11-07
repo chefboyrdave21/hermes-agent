@@ -378,3 +378,29 @@ def test_batch_cannot_cite_a_skill_written_earlier_in_the_batch(env, monkeypatch
         reset_current_write_origin(token)
     assert r["success"] is False and "rejected_uncited" in r["error"]
     assert not (env["skills"] / "probe").exists()
+
+
+def test_unterminated_frontmatter_has_no_quotable_text(umbrella):
+    from tools.skill_manager_tool import _find_skill
+
+    path = _find_skill("umb")["path"] / "SKILL.md"
+    path.write_text(
+        "---\nname: umb\ndescription: Use when this unterminated line is quoted here.\n"
+        "# Umb\nBody never closed.\n",
+        encoding="utf-8",
+    )
+    assert not umbrella["gate"].skill_source("umb")
+    other = "---\nname: other\ndescription: Use when this unterminated line is quoted here.\n# O\n"
+    umbrella["gate"]._enabled = lambda: False
+    from tools.skill_manager_tool import skill_manage
+
+    skill_manage(
+        action="create", name="other", content=UMBRELLA.replace("umb", "other")
+    )
+    (_find_skill("other")["path"] / "SKILL.md").write_text(other, encoding="utf-8")
+    umbrella["gate"]._enabled = lambda: True
+    assert not umbrella["gate"].skill_source("other")
+    r = _consolidation_patch(
+        ["skill:other"], "Use when this unterminated line is quoted here."
+    )
+    assert r["success"] is False
