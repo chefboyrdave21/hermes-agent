@@ -702,7 +702,7 @@ def _apply_skill_write_gate(action, name, **payload_kwargs):
 
 
 _FLAT_OP_KEYS = ("content", "category", "file_path", "file_content", "old_string", "new_string",
-                 "absorbed_into", "operations")
+                 "absorbed_into", "operations", "source_ids", "quote")
 
 
 def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
@@ -784,7 +784,7 @@ def skill_manage(
     action: str, name: str, content: str | None = None, category: str | None = None, file_path: str | None = None,
     file_content: str | None = None, old_string: str | None = None, new_string: str | None = None,
     replace_all: bool = False, absorbed_into: str | None = None, task_id: str | None = None,
-    session_id: str | None = None, operations=None) -> str:
+    session_id: str | None = None, operations=None, source_ids=None, quote=None) -> str:
     """Dispatch to the action handler -> JSON string. ``operations`` (atomic batch shape,
     see _skill_manage_batch) overrides the flat fields."""
     if operations is not None:
@@ -792,6 +792,11 @@ def skill_manage(
             operations, default_name=name or None, task_id=task_id, session_id=session_id)
     if (preflight := _background_review_preflight(action, name)) is not None:
         return json.dumps(preflight, ensure_ascii=False)
+    # Citation gate (SKMEM-P4-04): autonomous content writes must cite real sources.
+    from tools import skill_citation_gate
+    refusal, cite_verdict = skill_citation_gate.review(action, name, source_ids, quote)
+    if refusal is not None:
+        return json.dumps(refusal, ensure_ascii=False)
     # Approval gate: skills are too large to review inline, so they always stage regardless
     # of origin; bypassed when replaying an approved staged write.
     args = dict(content=content, category=category, file_path=file_path, file_content=file_content,
@@ -829,6 +834,10 @@ def skill_manage(
             _record_success(
                 action, name, result, file_path=file_path, absorbed_into=absorbed_into,
                 task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
+            if cite_verdict is not None:
+                skill_citation_gate.record_lesson(
+                    action, name, cite_verdict, quote,
+                    new_string or content or file_content or "")
     return json.dumps(result, ensure_ascii=False)
 
 
@@ -866,11 +875,21 @@ _FILE_PATH = {
 }  # stated once (write_file); patch/remove_file point at it
 
 
+_CITE = {
+    "source_ids": {"type": "array", "items": {"type": "string"},
+                   "description": "Background review only: ids of the memories or ledger events this "
+                                  "change is based on (they must exist)."},
+    "quote": {"type": "string",
+              "description": "Background review only: >= 20 chars copied verbatim from a cited source."},
+}
+
+
 def _op_schema(action: str, props: dict, required: tuple) -> dict:
     """One self-contained per-action op shape. ``additionalProperties: false`` is what lets a
     grammar-constrained backend refuse another action's text slot outright."""
     return {"type": "object", "additionalProperties": False,
-            "properties": {"name": _NAME, "action": {"type": "string", "enum": [action]}, **props},
+            "properties": {"name": _NAME, "action": {"type": "string", "enum": [action]}, **props,
+                           **(_CITE if action != "remove_file" and action != "delete" else {})},
             "required": ["name", "action", *required]}
 
 

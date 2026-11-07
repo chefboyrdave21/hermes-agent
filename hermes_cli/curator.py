@@ -81,6 +81,8 @@ def _print_curator_config(curator) -> None:
     print(f"curator: {status_line}")
     print(f"  runs:           {state.get('run_count', 0)}")
     print(f"  last run:       {_fmt_ts(state.get('last_run_at'))}")
+    print(f"  citation gate:  {state.get('accepted_lessons', 0)} lessons accepted, "
+          f"{state.get('rejected_uncited', 0)} rejected_uncited")
     # Multi-line when the curator archived skills (rename map appended as `name → umbrella`
     # lines); indent continuation lines so the block reads as one field.
     summary = state.get("last_run_summary") or "(none)"
