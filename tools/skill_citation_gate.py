@@ -15,7 +15,9 @@ user-directed writes are never gated. ``curator.citation_gate: false`` turns it 
 
 from __future__ import annotations
 
+import contextvars
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -86,6 +88,38 @@ EXISTS_ONLY = _Exists()
 SKILL_PREFIX = "skill:"
 
 
+_FRONTMATTER = re.compile(r"\A\s*---\r?\n.*?\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL)
+
+
+def _body(text: str) -> str:
+    """SKILL.md without its YAML frontmatter: only the body is quotable."""
+    return _FRONTMATTER.sub("", text, count=1)
+
+
+# Skills written so far in the current batch (None outside a batch): a batch may not cite a
+# skill it has itself just written, or it could launder its own output into a "source".
+_batch_written: contextvars.ContextVar[Optional[set]] = contextvars.ContextVar(
+    "skill_citation_batch_written", default=None
+)
+
+
+def begin_batch() -> contextvars.Token:
+    return _batch_written.set(set())
+
+
+def end_batch(token: contextvars.Token) -> None:
+    _batch_written.reset(token)
+
+
+def note_written(name: str) -> None:
+    if (written := _batch_written.get()) is not None:
+        written.add(_skill_name(name))
+
+
+def _skill_name(name: str) -> str:
+    return str(name).strip().rsplit("/", 1)[-1]
+
+
 def skill_source(name: str) -> Optional[str]:
     """Current SKILL.md text of an existing skill (``skill:<name>`` citations), else None.
     Consolidation and /refine merge existing skills, so an existing skill is a valid source."""
@@ -95,8 +129,10 @@ def skill_source(name: str) -> Optional[str]:
     if not found:
         return None
     try:
-        return (found["path"] / "SKILL.md").read_text(
-            encoding="utf-8-sig", errors="replace"
+        return _body(
+            (found["path"] / "SKILL.md").read_text(
+                encoding="utf-8-sig", errors="replace"
+            )
         )
     except OSError:
         return None
@@ -199,7 +235,19 @@ def review(
     if action not in GATED_ACTIONS or not is_background_review() or not _enabled():
         return None, None
     try:
-        verdict = check(source_ids, quote, default_resolver())
+        base = default_resolver()
+        barred = {_skill_name(name), *(_batch_written.get() or ())}
+
+        def resolve(sid: str):
+            # never the write target itself, never a skill this batch already wrote
+            if (
+                sid.startswith(SKILL_PREFIX)
+                and _skill_name(sid[len(SKILL_PREFIX) :]) in barred
+            ):
+                return None
+            return base(sid)
+
+        verdict = check(source_ids, quote, resolve)
     except Exception as exc:  # fail closed
         verdict = Verdict(
             False, f"cited sources could not be read ({type(exc).__name__})"
