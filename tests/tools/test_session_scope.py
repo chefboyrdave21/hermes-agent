@@ -196,3 +196,88 @@ def test_yolo_never_active_for_non_owner():
     with patch.object(approval, "is_current_session_yolo_enabled", return_value=True):
         _group(); assert approval._yolo_active() is False
         _chef_dm(); assert approval._yolo_active() is True
+
+
+# ---- P0-22 follow-up: slash, quick commands, hooks, sync, tts, AGENTS.md, logging -----------------
+def _src(user="333", chat="-100500", ctype="group"):
+    return SimpleNamespace(platform=SimpleNamespace(value="telegram"), chat_id=chat, chat_type=ctype, user_id=user)
+
+
+class _Runner:
+    """Just enough of the gateway runner for the real ``_check_slash_access``."""
+    config = SimpleNamespace()
+
+
+def _slash_check(source, cmd):
+    from gateway.run_busy import GatewayBusySessionMixin  # real method, fake self
+    return GatewayBusySessionMixin._check_slash_access(_Runner(), source, cmd)
+
+
+@pytest.mark.parametrize("cmd", ["memory", "skills", "approvals", "yolo", "update", "model", "my-exec-quick"])
+def test_slash_default_deny_for_non_owner(cmd):
+    assert "owner-only" in _slash_check(_src(), cmd)
+    assert "owner-only" in _slash_check(_src("222", "222", "dm"), cmd)
+
+
+@pytest.mark.parametrize("cmd", ["help", "whoami"])
+def test_slash_allowlist_for_non_owner(cmd):
+    with patch("gateway.slash_access.policy_for_runner_source", return_value=SimpleNamespace(enabled=False)):
+        assert _slash_check(_src(), cmd) is None
+
+
+def test_slash_owner_dm_not_denied_by_scope():
+    with patch("gateway.slash_access.policy_for_runner_source", return_value=SimpleNamespace(enabled=False)):
+        assert _slash_check(_src("111", "111", "dm"), "memory") is None
+
+
+def test_shell_hooks_never_spawn_for_non_owner():
+    from agent import shell_hooks
+    spec = SimpleNamespace(event="on_session_end", command="x.sh", matches_tool=lambda n: True)
+    cb = shell_hooks._make_callback(spec)
+    with patch.object(shell_hooks, "_spawn", return_value={}) as spawn, \
+            patch.object(shell_hooks, "_evaluate_result", return_value={"ok": 1}):
+        _group(); assert cb(session_id="s") is None and not spawn.called
+        _chef_dm(); assert cb(session_id="s") == {"ok": 1} and spawn.called
+
+
+def test_memory_writes_blocked_for_non_owner():
+    from agent.memory_manager import MemoryManager
+    mm = MemoryManager(); prov = MagicMock(); prov.name = "p"; mm._providers = [prov]
+    _group()
+    mm.sync_all("hi there friend", "reply", session_id="s")
+    mm.on_session_end([{"role": "user", "content": "x"}])
+    assert mm.on_pre_compress([{"role": "user", "content": "x"}]) == ""
+    mm.on_memory_write("add", "memory", "x"); mm.on_delegation("t", "r")
+    assert not prov.method_calls
+
+
+def test_tts_ignores_output_path_for_non_owner(tmp_path):
+    from tools.tts_tool import _resolve_output_base
+    target = str(tmp_path / "victim.mp3")
+    _group()
+    base, err = _resolve_output_base(target, "edge", None, False)
+    assert err is None and str(base) != target and base.name.startswith("tts_")
+    _chef_dm()
+    base, err = _resolve_output_base(target, "edge", None, False)
+    assert err is None and str(base).startswith(target.rsplit('.', 1)[0])
+
+
+def test_agents_md_skipped_for_non_owner(tmp_path):
+    from agent.prompt_builder import _load_agents_md
+    (tmp_path / "AGENTS.md").write_text("OPERATOR PRIVATE RULES")
+    _group(); assert _load_agents_md(tmp_path) == ""
+    _chef_dm(); assert "OPERATOR PRIVATE RULES" in _load_agents_md(tmp_path)
+
+
+def test_owner_config_logging_no_ids(monkeypatch, caplog):
+    import logging
+    monkeypatch.setattr(ss, "_logged", False)
+    monkeypatch.delenv("HERMES_MEMORY_OWNER")
+    with caplog.at_level(logging.INFO, logger="tools.session_scope"):
+        ss.log_owner_config()
+    assert any(r.levelno == logging.WARNING and "unset" in r.getMessage() for r in caplog.records)
+    caplog.clear(); monkeypatch.setattr(ss, "_logged", False); monkeypatch.setenv("HERMES_MEMORY_OWNER", OWNER)
+    with caplog.at_level(logging.INFO, logger="tools.session_scope"):
+        ss.log_owner_config()
+    msgs = " ".join(r.getMessage() for r in caplog.records)
+    assert "1 owner" in msgs and "111" not in msgs

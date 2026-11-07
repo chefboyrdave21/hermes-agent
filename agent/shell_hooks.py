@@ -542,8 +542,9 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
 
     def _callback(**kwargs: Any) -> Optional[dict[str, Any]]:
         from agent.safe_worker_policy import safe_worker_enabled
+        from tools.session_scope import is_owner_session
 
-        if safe_worker_enabled():
+        if safe_worker_enabled() or not is_owner_session():  # no shell hooks at all for non-owner sessions
             return None
         if spec.event in _TOOL_EVENTS and not spec.matches_tool(kwargs.get("tool_name")):
             return None

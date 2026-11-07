@@ -1399,6 +1399,10 @@ class GatewayBusySessionMixin:
         from gateway.slash_access import policy_for_runner_source
         if not canonical_cmd:
             return None
+        from tools.session_scope import SLASH_ALLOW, source_is_owner
+        if canonical_cmd.lower().lstrip("/") not in SLASH_ALLOW and not source_is_owner(source):
+            logger.info("Slash command /%s refused: owner-only (non-owner source)", canonical_cmd)
+            return "That command is owner-only."
         policy = policy_for_runner_source(self, source)
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None

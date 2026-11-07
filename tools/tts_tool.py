@@ -365,6 +365,9 @@ def _resolve_output_base(
     A caller path is rejected on ``..`` traversal (bug or prompt-injection; absolute is fine) and
     on protected credential/system locations. Default ``<audio cache>/tts_<timestamp>.<ext>``: the
     command format, ``.ogg`` for native-Opus providers on Opus platforms, else ``.mp3``."""
+    from tools.session_scope import is_owner_session
+    if output_path and not is_owner_session():
+        output_path = None  # non-owners never choose where audio is written (overwrite primitive)
     if output_path:
         from tools.path_security import has_traversal_component, has_unsafe_path_chars
         if has_unsafe_path_chars(output_path):

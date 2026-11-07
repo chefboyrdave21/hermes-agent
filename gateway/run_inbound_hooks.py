@@ -254,6 +254,9 @@ class GatewayInboundHooksMixin:
                 from hermes_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
+                    _denied = self._check_slash_access(source, command)  # plugin commands: owner-only by default
+                    if _denied is not None:
+                        return True, _denied, command
                     return True, await self._hm_run_plugin_handler(plugin_handler, event, source), command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e, exc_info=True)

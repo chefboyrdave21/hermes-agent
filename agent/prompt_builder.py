@@ -1684,6 +1684,9 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     files) is deduplicated. With a single match — the common case, and always the case outside a git repo —
     output is identical to the historical single-file behavior.
     """
+    from tools.session_scope import is_owner_session
+    if not is_owner_session():  # workdir AGENTS.md is operator-private context (SOUL stays: persona)
+        return ""
     sections: list[str] = []
     seen_content: set = set()
     for label, candidate, content in _agents_md_candidates(cwd_path):

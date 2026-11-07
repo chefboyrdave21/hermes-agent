@@ -470,7 +470,8 @@ class MemoryManager:
         (tool outputs included) go through ``_redact_for_provider`` so secrets are never archived
         verbatim in a provider's store (#115104).
         """
-        if self._fork_turn_hooks_suppressed():
+        from tools.session_scope import is_owner_session
+        if self._fork_turn_hooks_suppressed() or not is_owner_session():
             return
         providers = list(self._providers)
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
@@ -654,7 +655,8 @@ class MemoryManager:
         self._each_provider("on_turn_start failed", _tick)
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
-        if self._fork_turn_hooks_suppressed() or not self._owner_allows("on_session_end"):
+        from tools.session_scope import is_owner_session
+        if self._fork_turn_hooks_suppressed() or not self._owner_allows("on_session_end") or not is_owner_session():
             return
         messages = _redact_messages_for_egress(messages or [])
         self._each_provider("on_session_end failed", lambda p: p.on_session_end(messages), level=logging.WARNING,
@@ -731,6 +733,9 @@ class MemoryManager:
         for forks (``_fork_turn_hooks_suppressed``): the checkpoint is why a fork holds a provider, so a v2
         provider must save here whatever its non-primary write scope.
         """
+        from tools.session_scope import is_owner_session
+        if not is_owner_session():  # no pre-compaction memory write for non-owner sessions
+            return ""
         if not self._owner_allows("on_pre_compress"):
             if require_checkpoint:  # the caller keeps the uncompressed transcript
                 raise RuntimeError("Memory pre-compress checkpoint refused; see `hermes logs errors`")
@@ -778,7 +783,8 @@ class MemoryManager:
     def on_memory_write(self, action: str, target: str, content: str,
                         metadata: Optional[dict[str, Any]] = None) -> None:
         """Notify external providers when the built-in memory tool writes (skips builtin, the source)."""
-        if not self._owner_allows("on_memory_write"):
+        from tools.session_scope import is_owner_session
+        if not self._owner_allows("on_memory_write") or not is_owner_session():
             return
         content, metadata = _redact_for_provider(content, dict(metadata or {}))
 
@@ -861,7 +867,8 @@ class MemoryManager:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
 
     def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
-        if self._fork_turn_hooks_suppressed() or not self._owner_allows("on_delegation"):
+        from tools.session_scope import is_owner_session
+        if self._fork_turn_hooks_suppressed() or not self._owner_allows("on_delegation") or not is_owner_session():
             return
         task, result = _redact_for_provider(task, result)
         self._each_provider(

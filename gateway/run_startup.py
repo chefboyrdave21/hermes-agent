@@ -1716,6 +1716,8 @@ class GatewayStartupMixin:
 
     async def start(self) -> bool:
         """Start the gateway and all configured platform adapters."""
+        from tools.session_scope import log_owner_config
+        log_owner_config()
         try:
             return await self._start_impl()
         finally:
