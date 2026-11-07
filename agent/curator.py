@@ -45,6 +45,7 @@ def load_state() -> dict[str, Any]:
     base: dict[str, Any] = {
         "last_run_at": None, "last_run_duration_seconds": None, "last_run_summary": None,
         "last_run_summary_shown_at": None, "last_report_path": None, "paused": False, "run_count": 0,
+        "rejected_uncited": 0, "accepted_lessons": 0,
     }
     path = _state_file()
     try:
