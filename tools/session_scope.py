@@ -19,7 +19,6 @@ from typing import Any, Optional
 
 OWNER_ENV = "HERMES_MEMORY_OWNER"  # "telegram:<user id>,..."
 PUBLIC = "@public"
-_LOCAL_SOURCES = frozenset({"cli", "tui", "desktop", "local"})
 _DM_TYPES = frozenset({"dm", "direct", "private"})
 
 # Set by cron's run scope: True only for jobs stamped owner_created.
@@ -49,10 +48,10 @@ def _gateway_mode() -> bool:
 
 def session_reader() -> Optional[str]:
     """None = owner scope; else the reader string (``channel:<id>`` or ``@public``)."""
-    from gateway.session_context import get_session_env, session_context_engaged
+    from gateway.session_context import get_session_env
 
     g = lambda n: get_session_env(n, "").strip()
-    platform, source = g("HERMES_SESSION_PLATFORM").lower(), g("HERMES_SESSION_SOURCE").lower()
+    platform = g("HERMES_SESSION_PLATFORM").lower()
     chat_id, chat_type, user_id = g("HERMES_SESSION_CHAT_ID"), g("HERMES_SESSION_CHAT_TYPE").lower(), g("HERMES_SESSION_USER_ID")
     owners = _owners()
 
@@ -61,10 +60,10 @@ def session_reader() -> Optional[str]:
             return None
         dest = g("HERMES_CRON_AUTO_DELIVER_CHAT_ID")
         return f"channel:{dest}" if dest else PUBLIC
-    if not session_context_engaged():
-        return PUBLIC if _gateway_mode() else None  # unbound in the gateway is NOT the operator
-    if source in _LOCAL_SOURCES and not platform and not _gateway_mode():
-        return None
+    if not _gateway_mode() and not platform and not chat_id:
+        return None  # local CLI/TUI/desktop/API process with no messaging identity: the operator
+    if _gateway_mode() and not platform and not chat_id:
+        return PUBLIC  # gateway turn with nothing bound (goal, wake, webhook): NOT the operator
     if platform and chat_type in _DM_TYPES and user_id and f"{platform}:{user_id}" in owners:
         return None
     return f"channel:{chat_id}" if chat_id else PUBLIC
