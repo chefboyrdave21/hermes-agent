@@ -571,6 +571,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, *,
     op = f"tools/call {tool_name}"
 
     def _handler(args: dict, **kwargs) -> Any:
+        # Memory audience boundary (SKMEM-P0-19): force the per-chat reader before ANY other work; the model's value is discarded.
+        from tools.mcp_reader_scope import scope_tool_args
+        args, refusal = scope_tool_args(server_name, tool_name, args)
+        if refusal is not None:
+            return tool_error(refusal)
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
         error = _trust_gate_check(server_name, tool_name) or _check_circuit_breaker(server_name)
         if error is not None:
