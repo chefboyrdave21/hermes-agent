@@ -171,7 +171,7 @@ class GatewaySessionCommandsMixin:
         with contextlib.suppress(Exception):
             messages = await self._finalize_session_off_loop(
                 session_id=old_sid, platform=platform_value, reason="new_session",
-                old_session_id=old_sid, new_session_id=new_sid)
+                session_key=session_key, old_session_id=old_sid, new_session_id=new_sid)
             await self._deliver_session_end_messages(messages, source=source, session_key=session_key)
         hook_payload = {"platform": platform_value, "user_id": source.user_id, "session_key": session_key}
         await self.hooks.emit("session:end", dict(hook_payload))

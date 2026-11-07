@@ -924,7 +924,17 @@ class GatewayAgentCacheMixin:
             owner_home = Path(owner) if owner else get_default_hermes_root()
             if current_secret_scope() is None or hermes_home_key(get_hermes_home()) != hermes_home_key(owner_home):
                 scope = _profile_runtime_scope(owner_home)
-        with scope:
+        # Memory scope for work that runs outside a bound session (finalize, expiry, shutdown cleanup) comes
+        # from the stored origin of the session being released. Unknown session => non-owner.
+        from tools.session_scope import declared_scope
+        origin = None
+        if session_key:
+            try:
+                entry = getattr(getattr(self, "session_store", None), "_entries", {}).get(session_key)
+                origin = getattr(entry, "origin", None)
+            except Exception:
+                origin = None
+        with scope, declared_scope(origin if session_key else None) if session_key else nullcontext():
             target(*args)
 
     def _commit_memory_before_soft_evict(self, agent: Any, key: str, boundary: bool = False) -> None:
