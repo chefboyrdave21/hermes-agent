@@ -30,9 +30,18 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(skill_utils, "get_all_skills_dirs", lambda: [skills])
     monkeypatch.setattr(gate, "_enabled", lambda: True)
     stored = []
-    monkeypatch.setattr(gate, "default_resolver", lambda: {"mem-real-1": SOURCE}.get)
-    monkeypatch.setattr(gate, "default_writer", lambda: lambda **kw: stored.append(kw) or "lesson-1")
-    return {"skills": skills, "stored": stored, "gate": gate, "home": home}
+    orig_memory_resolver = gate.memory_resolver
+    monkeypatch.setattr(gate, "memory_resolver", lambda: {"mem-real-1": SOURCE}.get)
+    monkeypatch.setattr(
+        gate, "default_writer", lambda: lambda **kw: stored.append(kw) or "lesson-1"
+    )
+    return {
+        "skills": skills,
+        "stored": stored,
+        "gate": gate,
+        "home": home,
+        "orig_memory_resolver": orig_memory_resolver,
+    }
 
 
 def _review_create(**extra):
@@ -45,7 +54,9 @@ def _review_create(**extra):
 
     token = set_current_write_origin(BACKGROUND_REVIEW)
     try:
-        return json.loads(skill_manage(action="create", name="probe", content=SKILL, **extra))
+        return json.loads(
+            skill_manage(action="create", name="probe", content=SKILL, **extra)
+        )
     finally:
         reset_current_write_origin(token)
 
@@ -64,14 +75,19 @@ def test_fabricated_id_rejected(env):
 
 
 def test_real_id_paraphrase_rejected(env):
-    r = _review_create(source_ids=["mem-real-1"], quote="the deploy broke since a worker held the lock")
+    r = _review_create(
+        source_ids=["mem-real-1"], quote="the deploy broke since a worker held the lock"
+    )
     assert r["success"] is False
     assert not (env["skills"] / "probe").exists()
     assert _counter(env) == 1 and env["stored"] == []
 
 
 def test_short_quote_rejected(env):
-    assert _review_create(source_ids=["mem-real-1"], quote="deploy failed")["success"] is False
+    assert (
+        _review_create(source_ids=["mem-real-1"], quote="deploy failed")["success"]
+        is False
+    )
     assert _counter(env) == 1
 
 
@@ -106,7 +122,7 @@ def test_unavailable_store_fails_closed(env, monkeypatch):
     def boom():
         raise RuntimeError("no store")
 
-    monkeypatch.setattr(env["gate"], "default_resolver", boom)
+    monkeypatch.setattr(env["gate"], "memory_resolver", boom)
     assert _review_create(source_ids=["mem-real-1"], quote=QUOTE)["success"] is False
     assert _counter(env) == 1
 
@@ -121,12 +137,27 @@ def test_batch_ops_are_gated_and_roll_back(env):
 
     token = set_current_write_origin(BACKGROUND_REVIEW)
     try:
-        r = json.loads(skill_manage(action="", name="", operations=[
-            {"name": "probe", "action": "create", "content": SKILL,
-             "source_ids": ["mem-real-1"], "quote": QUOTE},
-            {"name": "probe", "action": "write_file", "file_path": "references/a.md",
-             "file_content": "a"},
-        ]))
+        r = json.loads(
+            skill_manage(
+                action="",
+                name="",
+                operations=[
+                    {
+                        "name": "probe",
+                        "action": "create",
+                        "content": SKILL,
+                        "source_ids": ["mem-real-1"],
+                        "quote": QUOTE,
+                    },
+                    {
+                        "name": "probe",
+                        "action": "write_file",
+                        "file_path": "references/a.md",
+                        "file_content": "a",
+                    },
+                ],
+            )
+        )
     finally:
         reset_current_write_origin(token)
     assert r["success"] is False
@@ -140,3 +171,126 @@ def test_normalize_and_verdicts():
     assert check(["a"], "x y z " + "q" * 20, res).ok
     assert not check([], "x y z " + "q" * 20, res).ok
     assert not check(["a"], "x y z", res).ok
+
+
+# --- review fixes: ledger JSON is never a quote source; skill:<name> is a source ---
+
+PATCH_QUOTE = "Step one is to check the lock file before deploying"
+UMBRELLA = (
+    "---\nname: umb\ndescription: Use when deploying. Behavior.\n---\n# Umb\n"
+    + PATCH_QUOTE
+    + ".\nStep 2.\n"
+)
+EVENT = {"id": "ev-real-1", "skill": "probe", "event": "skill_used", "version": "1"}
+
+
+def _real_memory_resolver(monkeypatch, env):
+    """The REAL memory_resolver against a fake skmemory: one ledger event, no memories."""
+    import sys
+    import types
+
+    fakes = {
+        "skmemory": types.ModuleType("skmemory"),
+        "skmemory.agents": types.SimpleNamespace(
+            get_agent_paths=lambda: {"base": env["home"]}
+        ),
+        "skmemory.ledger": types.SimpleNamespace(
+            Ledger=lambda base: types.SimpleNamespace(events=lambda: [EVENT])
+        ),
+        "skmemory.store": types.SimpleNamespace(
+            MemoryStore=lambda: types.SimpleNamespace(recall=lambda sid: None)
+        ),
+    }
+    for k, v in fakes.items():
+        monkeypatch.setitem(sys.modules, k, v)
+    monkeypatch.setattr(env["gate"], "memory_resolver", env["orig_memory_resolver"])
+    return env["gate"].default_resolver()
+
+
+def test_ledger_id_with_json_key_quote_refused(env, monkeypatch):
+    resolve = _real_memory_resolver(monkeypatch, env)
+    assert resolve("ev-real-1") is not None  # the id exists
+    for quote in (
+        '"event": "skill_used", "version"',
+        '"skill": "probe", "event": "skill_used"',
+    ):
+        assert not env["gate"].check(["ev-real-1"], quote, resolve).ok
+
+
+def test_ledger_id_is_extra_provenance_next_to_a_prose_source(env, monkeypatch):
+    real = _real_memory_resolver(monkeypatch, env)
+    resolve = lambda sid: real(sid) if sid == "ev-real-1" else SOURCE
+    v = env["gate"].check(["ev-real-1", "mem-real-1"], QUOTE, resolve)
+    assert v.ok and set(v.cited_ids) == {"ev-real-1", "mem-real-1"}
+
+
+@pytest.fixture
+def umbrella(env, monkeypatch):
+    from tools.skill_manager_tool import skill_manage
+
+    monkeypatch.setattr(env["gate"], "_enabled", lambda: False)
+    assert json.loads(skill_manage(action="create", name="umb", content=UMBRELLA))[
+        "success"
+    ]
+    monkeypatch.setattr(env["gate"], "_enabled", lambda: True)
+
+    def no_skmemory():
+        raise AssertionError("skill: citations must not touch skmemory")
+
+    monkeypatch.setattr(env["gate"], "memory_resolver", no_skmemory)
+    return env
+
+
+def _consolidation_patch(source_ids, quote):
+    from tools.skill_manager_guards import mark_background_review_skill_read
+    from tools.skill_manager_tool import _find_skill, skill_manage
+    from tools.skill_provenance import (
+        BACKGROUND_REVIEW,
+        reset_current_write_origin,
+        set_current_write_origin,
+    )
+
+    token = set_current_write_origin(BACKGROUND_REVIEW)
+    try:
+        mark_background_review_skill_read(_find_skill("umb")["path"] / "SKILL.md")
+        return json.loads(
+            skill_manage(
+                action="patch",
+                name="umb",
+                old_string="Step 2.",
+                new_string="Step 2, merged.",
+                source_ids=source_ids,
+                quote=quote,
+            )
+        )
+    finally:
+        reset_current_write_origin(token)
+
+
+def test_skill_citation_accepted_with_real_quote(umbrella):
+    r = _consolidation_patch(["skill:umb"], PATCH_QUOTE)
+    assert r["success"] is True, r
+    assert umbrella["stored"][0]["cited_ids"] == ["skill:umb"]
+
+
+def test_skill_citation_nonexistent_skill_refused(umbrella):
+    assert _consolidation_patch(["skill:ghost"], PATCH_QUOTE)["success"] is False
+
+
+def test_skill_citation_quote_not_in_skill_refused(umbrella):
+    r = _consolidation_patch(
+        ["skill:umb"], "this sentence is nowhere in the umbrella skill"
+    )
+    assert r["success"] is False
+
+
+def test_consolidation_and_refine_prompts_carry_the_instruction():
+    from agent import background_review as br
+    from agent.curator import CURATOR_REVIEW_PROMPT
+
+    for p in (
+        CURATOR_REVIEW_PROMPT,
+        br._SKILL_REVIEW_PROMPT,
+        br._COMBINED_REVIEW_PROMPT,
+    ):
+        assert "source_ids" in p and "quote" in p and "skill:<name>" in p
