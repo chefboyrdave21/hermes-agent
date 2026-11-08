@@ -830,7 +830,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             from gateway.platform_registry import platform_registry
             # A re-armed plugin import + register() joins its load deadline: run it off the event loop.
             await self._run_in_executor_with_context(platform_registry.get, platform.value)
-            adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
+            with self._default_root_adapter_scope():
+                adapter = await self._create_adapter_off_loop_deps(platform, platform_config)
             if not adapter:
                 if not self._adapter_may_heal(platform, platform_config):
                     # Became builtin/registered-but-None: a config change is needed, so stop retrying.
@@ -1752,6 +1753,20 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 # claim never raises mid-unserve or mid-teardown.
                 return hashlib.sha256(("hermes-mux:" + val.strip()).encode("utf-8", "surrogatepass")).hexdigest()[:16]
         return None
+
+    def _default_root_adapter_scope(self):
+        """Scope for creating a PRIMARY (default-profile) adapter under multiplexing.
+
+        Plugin platforms read credentials in ``check_fn`` / ``validate_config`` / the factory via
+        ``get_secret``, which fails closed with no scope bound. Secondaries get their scope from
+        ``_profile_runtime_scope``; the primary adapter map belongs to the DEFAULT root (not
+        ``get_hermes_home()``, a named launcher's home), so bind that. No-op when not multiplexing.
+        """
+        if not self._multiplex_on():
+            return contextlib.nullcontext()
+        from gateway.run import _profile_runtime_scope
+        from hermes_constants import get_default_hermes_root
+        return _profile_runtime_scope(Path(get_default_hermes_root()))
 
     def _create_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
         """Create an adapter bound to this runner (every lifecycle path goes through here so
