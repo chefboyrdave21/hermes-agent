@@ -9,7 +9,8 @@ session (goal, wake, webhook, background). Unset ``HERMES_MEMORY_OWNER`` fails c
 
 Non-owner turns get: reader ``channel:<chat id>`` (or ``@public`` with no chat), no MEMORY.md /
 USER.md, no pre_llm_call hook context, no external memory prefetch, no session_search, no /yolo,
-and ONLY the tools in the allowlists below.
+and ONLY the tools in the allowlists below, plus the owner-speaker grants (``HERMES_OWNER_SPEAKER_TOOLS``,
+default the Talk call tools) when the owner is the one speaking in a shared chat, for that chat only.
 """
 from __future__ import annotations
 
@@ -84,6 +85,16 @@ MCP_ALLOW: dict[str, frozenset[str]] = {
 NATIVE_ALLOW = frozenset({
     "web_search", "web_extract", "clarify", "todo_list", "text_to_speech", "image_generate",
 })
+
+# Owner-speaker grants: tools that run in a NON-owner chat when the speaker of THIS turn is a verified owner
+# (an identity in HERMES_MEMORY_OWNER), acting only on this chat. The turn stays non-owner in every other way
+# (reader, memory, hooks, prompt, every other tool). Default: the Talk call tools, so the owner can say
+# "join call" in a group room with a guest; whether the agent may join that room is still the call stack's own
+# allowlist (skcall SKCALL_ALLOWED_ROOMS). Comma list in HERMES_OWNER_SPEAKER_TOOLS; "off" or "" disables.
+OWNER_SPEAKER_TOOLS_ENV = "HERMES_OWNER_SPEAKER_TOOLS"
+OWNER_SPEAKER_TOOLS_DEFAULT = frozenset({"call_join", "call_leave", "call_status"})
+# Args that would point a granted tool away from this chat. A grant never reaches another room.
+_ELSEWHERE_ARGS = ("other_room",)
 
 
 def _canon_platform(platform: str) -> str:
@@ -170,9 +181,48 @@ def norm_server(name: str) -> str:
     return (name or "").strip().lower()
 
 
-def native_refusal(tool_name: str) -> Optional[str]:
+def owner_speaker_tools() -> frozenset[str]:
+    raw = os.environ.get(OWNER_SPEAKER_TOOLS_ENV)
+    if raw is None:
+        return OWNER_SPEAKER_TOOLS_DEFAULT
+    if raw.strip().lower() in ("", "off", "none", "0", "false"):
+        return frozenset()
+    return frozenset(t.strip() for t in raw.split(",") if t.strip())
+
+
+def speaker_is_owner() -> bool:
+    """True when the bound turn's SPEAKER is a verified owner identity, whatever the chat (DM, group, listed
+    or not). Never true for cron, api_server, unbound gateway turns or a declared (override) scope."""
+    from gateway.session_context import get_session_env
+
+    try:
+        if _override.get() is not None:
+            return False
+        g = lambda n: get_session_env(n, "").strip()
+        if g("HERMES_CRON_SESSION") == "1":
+            return False
+        plat, user_id = _canon_platform(g("HERMES_SESSION_PLATFORM")), g("HERMES_SESSION_USER_ID")
+        if not plat or plat == "api_server" or not user_id or not g("HERMES_SESSION_CHAT_ID"):
+            return False
+        return f"{plat}:{user_id.lower()}" in _owners()
+    except Exception:  # fail closed
+        return False
+
+
+def owner_speaker_grant(tool_name: str, args: Optional[dict] = None) -> bool:
+    """May ``tool_name`` run in this non-owner turn because the owner is the one asking? Only tools in
+    ``owner_speaker_tools()``, only when the speaker is an owner, and only on this chat (no ``other_room``)."""
+    if tool_name not in owner_speaker_tools() or not speaker_is_owner():
+        return False
+    args = args if isinstance(args, dict) else {}
+    if any(str(args.get(k, "")).strip().lower() in ("1", "true", "yes", "on") for k in _ELSEWHERE_ARGS):
+        return False
+    return True
+
+
+def native_refusal(tool_name: str, args: Optional[dict] = None) -> Optional[str]:
     """Refusal text for a NON-MCP tool in a non-owner session, else None."""
-    if is_owner_session() or tool_name in NATIVE_ALLOW:
+    if is_owner_session() or tool_name in NATIVE_ALLOW or owner_speaker_grant(tool_name, args):
         return None
     return f"{tool_name} is not available in this chat"
 
