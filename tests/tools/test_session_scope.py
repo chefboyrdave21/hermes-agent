@@ -440,3 +440,65 @@ def test_frozen_prompt_not_reused_across_scopes(_chats):
     assert _prompt_for_turn(ag) == "PROMPT[None]" and calls == ["build"]  # same scope: cache hit
     _bind(chat_id="-1001", chat_type="group", user_id="999")
     assert _prompt_for_turn(ag) == "PROMPT[channel:-1001]" and len(calls) == 2
+
+
+# ---- owner-speaker grants (Talk call tools in a shared room) ------------------------------------
+def _talk_group(user_id):
+    _bind(platform="nctalk", chat_id="zmiqk5yk", chat_type="group", user_id=user_id)
+
+
+@pytest.fixture
+def _talk_owner(monkeypatch):
+    monkeypatch.setenv("HERMES_MEMORY_OWNER", "nextcloud_talk:dknestri")
+    monkeypatch.delenv("HERMES_OWNER_SPEAKER_TOOLS", raising=False)
+
+
+@pytest.mark.parametrize("tool", ["call_join", "call_leave", "call_status"])
+def test_owner_speaker_may_use_call_tools_in_group(_talk_owner, tool):
+    import model_tools
+    _talk_group("DKnestri")
+    assert ss.session_reader() == "channel:zmiqk5yk"  # the turn itself stays non-owner
+    with patch("tools.registry.registry.dispatch", return_value="{}") as d:
+        out = model_tools.handle_function_call(tool, {})
+    assert "not available" not in out
+    d.assert_called_once()
+
+
+def test_owner_speaker_grant_is_only_the_call_tools(_talk_owner):
+    import model_tools
+    _talk_group("dknestri")
+    for tool in ("terminal", "skill_view", "memory", "send_message", "session_search"):
+        assert "not available" in model_tools.handle_function_call(tool, {})
+    assert ss.native_refusal("skill_view") is not None
+    assert ss.native_refusal("call_join") is None
+
+
+def test_guest_in_same_room_gets_no_call_tools(_talk_owner):
+    import model_tools
+    _talk_group("manolo")
+    assert "not available" in model_tools.handle_function_call("call_join", {})
+
+
+def test_owner_speaker_grant_never_reaches_another_room(_talk_owner):
+    _talk_group("dknestri")
+    assert ss.owner_speaker_grant("call_join", {"room": "zmiqk5yk"})
+    assert not ss.owner_speaker_grant("call_join", {"room": "gaquurgh", "other_room": True})
+    assert not ss.owner_speaker_grant("call_join", {"other_room": "true"})
+
+
+def test_owner_speaker_grant_configurable(_talk_owner, monkeypatch):
+    _talk_group("dknestri")
+    monkeypatch.setenv("HERMES_OWNER_SPEAKER_TOOLS", "off")
+    assert not ss.owner_speaker_grant("call_join")
+    monkeypatch.setenv("HERMES_OWNER_SPEAKER_TOOLS", "call_status")
+    assert ss.owner_speaker_grant("call_status") and not ss.owner_speaker_grant("call_join")
+
+
+def test_owner_speaker_grant_not_for_cron_api_or_unbound(_talk_owner, monkeypatch):
+    _bind(platform="api_server", chat_id="s1", user_id="dknestri")
+    assert not ss.owner_speaker_grant("call_join")
+    _bind()
+    assert not ss.owner_speaker_grant("call_join")
+    _talk_group("dknestri")
+    with ss.declared_scope(None):
+        assert not ss.owner_speaker_grant("call_join")
