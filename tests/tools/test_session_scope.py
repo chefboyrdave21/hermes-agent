@@ -502,3 +502,27 @@ def test_owner_speaker_grant_not_for_cron_api_or_unbound(_talk_owner, monkeypatc
     _talk_group("dknestri")
     with ss.declared_scope(None):
         assert not ss.owner_speaker_grant("call_join")
+
+
+# ---- v0.23 gateway-hosted local sessions -----------------------------------------------------------
+
+def test_gateway_hosted_local_session_is_the_operator(monkeypatch):
+    """v0.23 serves CLI/TUI/desktop/ACP as LOCAL-platform sessions inside the gateway process."""
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    _bind(platform="local")
+    assert ss.session_reader() is None and ss.is_owner_session()
+    assert ss.native_refusal("terminal") is None
+
+
+def test_local_is_owner_even_with_no_owner_configured(monkeypatch):
+    monkeypatch.delenv("HERMES_MEMORY_OWNER", raising=False)
+    assert ss.source_reader("local", "", "", "") is None
+
+
+def test_messaging_sessions_still_default_deny_in_gateway_mode(monkeypatch):
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    _bind(chat_id="-100500", chat_type="group", user_id="333")
+    assert ss.session_reader() == "channel:-100500"
+    _bind(platform="telegram")  # nothing bound but the platform: not the operator
+    assert ss.session_reader() == "@public"
+    assert ss.source_reader("telegram", "", "dm", "local") == "@public"  # a user id spelled local is no one

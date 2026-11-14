@@ -128,6 +128,11 @@ def source_reader(platform: str, chat_id: str, chat_type: str, user_id: str, pro
     named profile (profile keys belong to other principals)."""
     platform, chat_id, chat_type, user_id = (str(v or "").strip() for v in (platform, chat_id, chat_type, user_id))
     plat, chat_type = _canon_platform(platform), chat_type.lower()
+    if plat == "local":
+        # v0.23 hosts the operator's own surfaces (CLI, TUI, desktop, ACP) as gateway sessions on the
+        # LOCAL platform: reachable only over the gateway's local socket or the token-gated dashboard,
+        # never from a messaging adapter. Same principal as the gateway-less local process above.
+        return None
     if plat == "api_server":
         if os.environ.get(API_KEY_ENV, "").strip() and (profile or "").strip().lower() in ("", "default"):
             return None
