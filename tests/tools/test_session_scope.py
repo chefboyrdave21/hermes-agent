@@ -187,7 +187,7 @@ def test_external_prefetch_skipped_for_non_owner():
     mm = MagicMock(); mm.prefetch_all.return_value = "SECRET"
     ag = SimpleNamespace(_memory_manager=mm, _user_turn_count=1, session_id="s")
     _group()
-    assert turn_context._memory_turn_start_and_prefetch(ag, "tell me things") == ""
+    assert turn_context._memory_turn_start_and_prefetch(ag, "tell me things", None, "") == ""
     assert not mm.prefetch_all.called
 
 
