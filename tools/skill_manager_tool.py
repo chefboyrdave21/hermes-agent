@@ -878,7 +878,7 @@ _FILE_PATH = {
 
 _CITE = {
     "source_ids": {"type": "array", "items": {"type": "string"},
-                   "description": "Background review only: ids of the memories or ledger events this "
+                   "description": "Background review only: ids of the skmemory memories (or skill:<name>) this "
                                   "change is based on (they must exist)."},
     "quote": {"type": "string",
               "description": "Background review only: >= 20 chars copied verbatim from a cited source."},

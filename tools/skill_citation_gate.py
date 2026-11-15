@@ -1,8 +1,8 @@
 """Citation gate for autonomous skill writes (SKMEM-P4-04).
 
 The background review fork (the curator) may write a lesson or patch a skill only
-when it cites at least one source experience id (a skmemory memory id or an outcome
-ledger event id) that actually exists, and quotes at least ``MIN_QUOTE_CHARS``
+when it cites at least one source experience id (a skmemory memory id the turn's
+reader may see, or ``skill:<name>``) that actually exists, and quotes at least ``MIN_QUOTE_CHARS``
 characters verbatim from one cited source (whitespace-normalised). Anything else is
 refused, ``rejected_uncited`` is incremented in the curator state (shown by
 ``hermes curator status``) and a log line is written. Accepted lessons are stored in
@@ -94,7 +94,7 @@ def _enabled() -> bool:
 
 
 class _Exists:
-    """Marker for a source that exists but has no prose (an outcome ledger event). It counts as
+    """Marker for a source that exists but has no prose. It counts as
     provenance only: a quote can never be satisfied by it."""
 
 
@@ -377,8 +377,8 @@ def review(
             "rejected_uncited": True,
             "error": (
                 f"rejected_uncited: refusing background {action} for skill '{name}': "
-                f"{verdict.reason}. Cite source_ids (existing memory ids or ledger event "
-                f"ids) and a verbatim quote (>= {MIN_QUOTE_CHARS} characters) from one of them."
+                f"{verdict.reason}. Cite source_ids (existing skmemory memory ids or "
+                f"skill:<name>) and a verbatim quote (>= {MIN_QUOTE_CHARS} characters) from one of them."
             ),
         },
         None,
