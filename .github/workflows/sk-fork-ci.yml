@@ -1,0 +1,77 @@
+# sk fork CI: the merge gate for chefboyrdave21/hermes-agent.
+#
+# Upstream's workflows (ci.yaml, tests.yml, ...) run on paid blacksmith runners
+# and upstream-only checks, so in this fork they sit pending or fail whatever a
+# PR changes. This workflow runs only in the fork, on GitHub's own runners, and
+# tests what the fork itself adds: the suites listed in .github/sk-ci/tests.txt
+# plus ruff on the Python files a PR changes. See .github/sk-ci/README.md.
+#
+# Fork-only by construction: every job is gated on the repository name, so this
+# file is inert if it ever reaches upstream or another fork.
+name: sk fork CI
+
+on:
+  pull_request:
+    branches: ["sk/**", "card/**"]
+  push:
+    branches: ["sk/**", "card/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sk-fork-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: sk gate (ruff + fork suites)
+    if: github.repository == 'chefboyrdave21/hermes-agent'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      HERMES_DISABLE_LAZY_INSTALLS: "1"
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        # Same pinned action and uv version as upstream's tests.yml.
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.12.13"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.14
+        run: uv python install 3.14
+
+      - name: Install dependencies
+        run: uv sync --locked --python 3.14 --extra all --group dev --extra anthropic
+
+      - name: Ruff on changed Python files
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+            git cat-file -e "$base^{commit}" 2>/dev/null || base="HEAD~1"
+          fi
+          mapfile -t files < <(git diff --name-only --diff-filter=ACMR "$base"...HEAD -- '*.py' || true)
+          if [ "${#files[@]}" -eq 0 ]; then echo "no Python changes"; exit 0; fi
+          printf '%s\n' "${files[@]}"
+          uv run --no-sync ruff check "${files[@]}"
+
+      - name: Fork suites
+        run: |
+          set -euo pipefail
+          mapfile -t tests < <(grep -v -E '^\s*(#|$)' .github/sk-ci/tests.txt)
+          for t in "${tests[@]}"; do
+            [ -e "$t" ] || { echo "::error::listed test file is missing: $t"; exit 1; }
+          done
+          uv run --no-sync python -m pytest -q -p no:cacheprovider "${tests[@]}"
