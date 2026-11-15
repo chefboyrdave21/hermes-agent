@@ -10,7 +10,9 @@ session (goal, wake, webhook, background). Unset ``HERMES_MEMORY_OWNER`` fails c
 Non-owner turns get: reader ``channel:<chat id>`` (or ``@public`` with no chat), no MEMORY.md /
 USER.md, no pre_llm_call hook context, no external memory prefetch, no session_search, no /yolo,
 and ONLY the tools in the allowlists below, plus the owner-speaker grants (``HERMES_OWNER_SPEAKER_TOOLS``,
-default the Talk call tools) when the owner is the one speaking in a shared chat, for that chat only.
+default the Talk call tools) when the owner is the one speaking in a shared chat, for that chat only, plus
+the plugin guest grants: a tool a plugin registered with a ``guest_guard`` (consent ``tools.guest``) runs
+when that guard approves the bound turn.
 """
 from __future__ import annotations
 
@@ -18,7 +20,8 @@ import logging
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
 
 OWNER_ENV = "HERMES_MEMORY_OWNER"  # speakers: "telegram:<user id>,nctalk:<nextcloud user id>,..."
 OWNER_CHATS_ENV = "HERMES_MEMORY_OWNER_CHATS"  # private owner-only chats: "telegram:-100123,nctalk:<room token>,..."
@@ -225,9 +228,78 @@ def owner_speaker_grant(tool_name: str, args: Optional[dict] = None) -> bool:
     return True
 
 
+# ---- plugin guest grants ------------------------------------------------------------------------
+# A plugin may open one of its OWN tools to non-owner turns by registering it with a guard
+# (``ctx.register_tool(..., guest_guard=fn)``), and only with operator consent ``tools.guest``. The guard
+# sees the bound turn (read from session ContextVars, never from the model) plus the call's args, and
+# returns True to allow THIS call. Anything else, an exception, an unbound turn, cron, api_server, a
+# local surface or a declared scope: refused. The turn stays non-owner in every other way.
+
+
+@dataclass(frozen=True)
+class GuestTurn:
+    """What a guest guard judges: the bound gateway turn. ``platform`` is canonical (``nctalk``)."""
+    platform: str
+    chat_id: str
+    chat_type: str
+    user_id: str
+    thread_id: str
+
+
+GuestGuard = Callable[[GuestTurn, dict], bool]
+_GUEST_GUARDS: dict[str, GuestGuard] = {}
+
+
+def register_guest_guard(tool_name: str, guard: GuestGuard) -> None:
+    if not tool_name or not callable(guard):
+        raise ValueError("register_guest_guard needs a tool name and a callable guard")
+    _GUEST_GUARDS[tool_name] = guard
+
+
+def unregister_guest_guard(tool_name: str, guard: Optional[GuestGuard] = None) -> None:
+    """Remove ``tool_name``'s guard (only if it is still ``guard``, when given)."""
+    if guard is None or _GUEST_GUARDS.get(tool_name) is guard:
+        _GUEST_GUARDS.pop(tool_name, None)
+
+
+def guest_turn() -> Optional[GuestTurn]:
+    """The bound messaging turn, or None when there is none a guard may judge."""
+    from gateway.session_context import get_session_env
+
+    if _override.get() is not None:
+        return None
+    g = lambda n: get_session_env(n, "").strip()
+    if g("HERMES_CRON_SESSION") == "1":
+        return None
+    plat, chat_id = _canon_platform(g("HERMES_SESSION_PLATFORM")), g("HERMES_SESSION_CHAT_ID")
+    if not plat or plat in ("api_server", "local") or not chat_id:
+        return None
+    return GuestTurn(plat, chat_id, g("HERMES_SESSION_CHAT_TYPE").lower(), g("HERMES_SESSION_USER_ID"),
+                     g("HERMES_SESSION_THREAD_ID"))
+
+
+def guest_grant(tool_name: str, args: Optional[dict] = None) -> bool:
+    """May ``tool_name`` run in this non-owner turn because its plugin's guard approves it?"""
+    guard = _GUEST_GUARDS.get(tool_name)
+    if guard is None:
+        return False
+    try:
+        turn = guest_turn()
+        if turn is None:
+            return False
+        allowed = guard(turn, dict(args) if isinstance(args, dict) else {}) is True
+    except Exception as e:  # fail closed
+        logger.warning("guest guard for %s raised %s: refused", tool_name, type(e).__name__)
+        return False
+    logger.info("guest_grant tool=%s platform=%s chat=%s decision=%s", tool_name, turn.platform,
+                turn.chat_id, "allow" if allowed else "deny")
+    return allowed
+
+
 def native_refusal(tool_name: str, args: Optional[dict] = None) -> Optional[str]:
     """Refusal text for a NON-MCP tool in a non-owner session, else None."""
-    if is_owner_session() or tool_name in NATIVE_ALLOW or owner_speaker_grant(tool_name, args):
+    if (is_owner_session() or tool_name in NATIVE_ALLOW or owner_speaker_grant(tool_name, args)
+            or guest_grant(tool_name, args)):
         return None
     return f"{tool_name} is not available in this chat"
 
