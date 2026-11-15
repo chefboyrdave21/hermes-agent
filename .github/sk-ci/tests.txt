@@ -1,0 +1,18 @@
+# Suites the sk fork CI runs (.github/workflows/sk-fork-ci.yml), one path per line.
+# Rule: every test file the fork adds or changes versus upstream, plus the suites
+# next to code our patches touch. A fork PR that adds a test file adds it here.
+
+# Fork-owned (added or changed by sk/* commits)
+tests/cron/test_lifecycle_guard_ssh_remote.py
+tests/gateway/test_default_profile_adapter_scope.py
+tests/gateway/test_primary_connect_scope.py
+tests/tools/test_file_operations.py
+tests/tools/test_memory_tool.py
+tests/tools/test_session_scope.py
+tests/tools/test_session_scope_guest_grants.py
+tests/tools/test_skill_citation_gate.py
+
+# Neighbours of code the fork patches
+tests/hermes_cli/test_plugin_capabilities.py
+tests/agent/test_inline_tool_executors_memory_args.py
+tests/gateway/test_session_context_inheritance.py
