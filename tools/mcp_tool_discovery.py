@@ -630,7 +630,10 @@ def discover_mcp_tools(allowed_mcp_names: Optional[list[str]] = None) -> list[st
     # SDK import deferred to here so a config without servers — or a -t filter that keeps
     # none — never pays it.
     if not _core._ensure_mcp_sdk():
-        logger.debug("MCP SDK not available -- skipping MCP tool discovery")
+        # Servers are configured, so this is a broken install (built without the ``mcp``
+        # extra), not an opt-out: say so where the default logs show it.
+        logger.warning("%d MCP server(s) configured but the mcp SDK is not importable; no MCP tools "
+                       "will load. Install the 'mcp' extra.", len(servers))
         return []
     cookie = _acquire_discovery_lock_with_retry()
     try:

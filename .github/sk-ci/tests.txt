@@ -16,3 +16,7 @@ tests/tools/test_skill_citation_gate.py
 tests/hermes_cli/test_plugin_capabilities.py
 tests/agent/test_inline_tool_executors_memory_args.py
 tests/gateway/test_session_context_inheritance.py
+
+# sk-deploy export setup
+tests/sk/test_deploy_setup_extras.py
+tests/tools/test_mcp_sdk_missing_warning.py
