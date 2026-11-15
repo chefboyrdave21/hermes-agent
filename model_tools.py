@@ -917,11 +917,13 @@ def handle_function_call(
     trace = list(tool_request_middleware_trace or [])
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
     # Default-deny for non-owner sessions (SKMEM-P0-19/22): only NATIVE_ALLOW tools run here, plus the
-    # owner-speaker grants (the owner asking in a shared chat, for that chat only); MCP tools are judged in
-    # their own handler (server-aware allowlist + reader capability check).
-    from tools.session_scope import NATIVE_ALLOW, is_owner_session, owner_speaker_grant
+    # owner-speaker grants (the owner asking in a shared chat, for that chat only) and plugin guest grants
+    # (the plugin's guard approves this turn); MCP tools are judged in their own handler (server-aware
+    # allowlist + reader capability check).
+    from tools.session_scope import NATIVE_ALLOW, guest_grant, is_owner_session, owner_speaker_grant
     if (function_name not in NATIVE_ALLOW and not is_owner_session()
-            and not owner_speaker_grant(function_name, function_args)):
+            and not owner_speaker_grant(function_name, function_args)
+            and not guest_grant(function_name, function_args)):
         _ts = registry.get_toolset_for_tool(function_name) or ""
         if not (_ts.startswith("mcp-") and function_name not in ("tool_call", "tool_search", "tool_describe")):
             return tool_error(f"{function_name} is not available in this chat")
