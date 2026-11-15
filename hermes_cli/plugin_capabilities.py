@@ -26,6 +26,9 @@ class CapabilitySpec:
 
 # (id, legacy_path, description) — ONLY capabilities with an existing enforcing surface.
 _CAPABILITY_ROWS = (
+    ("tools.guest", ("allow_guest_tools",),
+     "Let some of its tools run in chats with people who are not "
+     "the owner; the plugin's own guard decides every call"),
     ("tools.override", ("allow_tool_override",),
      "Replace built-in tools (e.g. shell_exec, write_file) — an "
      "override can intercept everything routed through that tool"),

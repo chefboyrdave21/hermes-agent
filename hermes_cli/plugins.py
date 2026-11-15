@@ -457,8 +457,12 @@ class PluginContext:
         self, name: str, toolset: str, schema: dict, handler: Callable,
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", override: bool = False,
+        guest_guard: Callable | None = None,
     ) -> Optional[PluginRegistration]:
-        """Register a tool in the global registry and track it as plugin-provided. ``override=True``
+        """Register a tool in the global registry and track it as plugin-provided. ``guest_guard`` (a
+        ``(GuestTurn, args) -> bool``) lets the tool run in non-owner turns the guard approves; it needs
+        operator consent ``tools.guest`` (``plugins.entries.<plugin_id>.allow_guest_tools: true``), and
+        without it the tool stays owner-only. ``override=True``
         replaces a same-named built-in (without it a name claimed by another toolset is rejected) and
         needs operator opt-in via ``plugins.entries.<plugin_id>.allow_tool_override: true`` — otherwise
         any enabled plugin could silently replace a privileged built-in like ``write_file``.
@@ -489,9 +493,19 @@ class PluginContext:
         handle = None
         if registered is not None and registered is not previous and registered.handler is handler:
             self._manager._plugin_tool_names.add(name)
+            guard = guest_guard if guest_guard is not None and self._guest_tools_allowed(name) else None
+            if guard is not None:
+                from tools.session_scope import register_guest_guard
+                register_guest_guard(name, guard)
+
+            def _finalize(name=name, guard=guard):
+                if guard is not None:
+                    from tools.session_scope import unregister_guest_guard
+                    unregister_guest_guard(name, guard)
+                self._manager._remove_tool_name_if_unowned(name)
+
             handle = self._manager._track_scoped_registration(
-                self.manifest, "tool", name, registry, registered, previous,
-                finalize=lambda: self._manager._remove_tool_name_if_unowned(name),
+                self.manifest, "tool", name, registry, registered, previous, finalize=_finalize,
             )
         logger.debug("Plugin %s registered tool: %s%s", self.manifest.name, name,
                      " (override)" if override else "")
@@ -571,6 +585,22 @@ class PluginContext:
             return []
         allowlist = (_plugin_settings_entry(cfg, plugin_id) or {}).get("mcp_allowlist")
         return [str(item) for item in allowlist] if isinstance(allowlist, list) else []
+
+    def _guest_tools_allowed(self, tool_name: str) -> bool:
+        """Whether this plugin may open ``tool_name`` to non-owner turns: consent ``tools.guest`` only (bundled
+        plugins are NOT trusted by default here; who may reach the agent is the operator's decision)."""
+        try:
+            from hermes_cli.config import load_config
+            with _plugin_home_scope(self._manager.home_path):
+                cfg = load_config() or {}
+        except Exception:
+            cfg = None
+        allowed = cfg is not None and plugin_capability_granted(self.plugin_id, "tools.guest", config=cfg)
+        if not allowed:
+            logger.warning(
+                "Plugin %s asked to open %s to guests; not granted (plugins.entries.%s.allow_guest_tools: "
+                "true): it stays owner-only", self.manifest.name, tool_name, self.plugin_id)
+        return allowed
 
     def _tool_override_allowed(self, tool_name: str) -> bool:
         """Whether this plugin may override built-in tools: bundled plugins are trusted (a maintainer
