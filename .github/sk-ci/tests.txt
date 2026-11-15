@@ -11,6 +11,7 @@ tests/tools/test_memory_tool.py
 tests/tools/test_session_scope.py
 tests/tools/test_session_scope_guest_grants.py
 tests/tools/test_skill_citation_gate.py
+tests/tools/test_skill_citation_gate_cli.py
 
 # Neighbours of code the fork patches
 tests/hermes_cli/test_plugin_capabilities.py

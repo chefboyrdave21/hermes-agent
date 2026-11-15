@@ -181,35 +181,19 @@ UMBRELLA = (
     + PATCH_QUOTE
     + ".\nStep 2.\n"
 )
-EVENT = {"id": "ev-real-1", "skill": "probe", "event": "skill_used", "version": "1"}
+def _exists_only_resolver(sid):
+    """A source that exists but has no quotable prose (EXISTS_ONLY)."""
+    return env_gate().EXISTS_ONLY if sid == "ev-real-1" else None
 
 
-def _real_memory_resolver(monkeypatch, env):
-    """The REAL memory_resolver against a fake skmemory: one ledger event, no memories."""
-    import sys
-    import types
+def env_gate():
+    from tools import skill_citation_gate as gate
 
-    fakes = {
-        "skmemory": types.ModuleType("skmemory"),
-        "skmemory.agents": types.SimpleNamespace(
-            get_agent_paths=lambda: {"base": env["home"]}
-        ),
-        "skmemory.ledger": types.SimpleNamespace(
-            Ledger=lambda base: types.SimpleNamespace(events=lambda: [EVENT])
-        ),
-        "skmemory.store": types.SimpleNamespace(
-            MemoryStore=lambda: types.SimpleNamespace(recall=lambda sid: None)
-        ),
-    }
-    for k, v in fakes.items():
-        monkeypatch.setitem(sys.modules, k, v)
-    monkeypatch.setattr(env["gate"], "memory_resolver", env["orig_memory_resolver"])
-    return env["gate"].default_resolver()
+    return gate
 
 
-def test_ledger_id_with_json_key_quote_refused(env, monkeypatch):
-    resolve = _real_memory_resolver(monkeypatch, env)
-    assert resolve("ev-real-1") is not None  # the id exists
+def test_exists_only_id_with_json_key_quote_refused(env):
+    resolve = _exists_only_resolver
     for quote in (
         '"event": "skill_used", "version"',
         '"skill": "probe", "event": "skill_used"',
@@ -217,9 +201,8 @@ def test_ledger_id_with_json_key_quote_refused(env, monkeypatch):
         assert not env["gate"].check(["ev-real-1"], quote, resolve).ok
 
 
-def test_ledger_id_is_extra_provenance_next_to_a_prose_source(env, monkeypatch):
-    real = _real_memory_resolver(monkeypatch, env)
-    resolve = lambda sid: real(sid) if sid == "ev-real-1" else SOURCE
+def test_exists_only_id_is_extra_provenance_next_to_a_prose_source(env):
+    resolve = lambda sid: _exists_only_resolver(sid) if sid == "ev-real-1" else SOURCE
     v = env["gate"].check(["ev-real-1", "mem-real-1"], QUOTE, resolve)
     assert v.ok and set(v.cited_ids) == {"ev-real-1", "mem-real-1"}
 

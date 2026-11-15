@@ -8,16 +8,31 @@ refused, ``rejected_uncited`` is incremented in the curator state (shown by
 ``hermes curator status``) and a log line is written. Accepted lessons are stored in
 skmemory as ``kind=procedure, outcome=lesson`` with the verified ids.
 
-The quote must come from prose (a memory or a skill's text), never a ledger event, which
-is extra provenance only. Fails closed: if the sources cannot be read, nothing is written. Foreground,
-user-directed writes are never gated. ``curator.citation_gate: false`` turns it off.
+skmemory is reached through its CLI, never imported: it lives in its own venv
+(``~/.skenv``), not Hermes's. ``HERMES_SKMEMORY_BIN`` or ``curator.skmemory_bin`` names
+the binary, else ``skmemory`` on PATH, else ``~/.skenv/bin/skmemory``; a missing CLI is
+an error (the gate fails closed and says why), never a silent skip. Memory ids are
+checked with ``skmemory recall --exact`` under the turn's reader (the session scope): in
+a non-owner turn an id that reader may not see reads as not found, so it cannot be
+cited. Lessons are stored only from an owner turn (non-owner turns never write memory),
+as ``source_tier=self-generated`` with ``source_ref`` naming the session or run.
+
+The quote must come from prose (a memory or a skill's text). Fails closed: if the sources
+cannot be read, nothing is written. Foreground, user-directed writes are never gated.
+``curator.citation_gate: false`` turns it off.
 """
 
 from __future__ import annotations
 
 import contextvars
+import json
 import logging
+import os
 import re
+import shutil
+import subprocess
+from datetime import UTC, datetime
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -141,26 +156,103 @@ def skill_source(name: str) -> Optional[str]:
         return None
 
 
-def memory_resolver() -> Resolver:
-    """Read-only resolver over the active agent's skmemory store and outcome ledger. Memory ids
-    give prose (title + content); ledger event ids give ``EXISTS_ONLY``, never JSON text."""
-    from skmemory.agents import get_agent_paths
-    from skmemory.ledger import Ledger
-    from skmemory.store import MemoryStore
+SKMEMORY_BIN_ENV = "HERMES_SKMEMORY_BIN"
+DEFAULT_SKMEMORY_BIN = "~/.skenv/bin/skmemory"
+CLI_TIMEOUT_SECONDS = 60
+# What the skmemory CLI child inherits: agent selection, home and locale. Never Hermes's
+# provider keys or tokens.
+_CLI_ENV_KEYS = (
+    "HOME", "PATH", "LANG", "LC_ALL", "TZ", "USER", "LOGNAME", "XDG_RUNTIME_DIR",
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "SKAGENT", "SKCAPSTONE_AGENT",
+    "SKMEMORY_AGENT", "SK_DEFAULT_AGENT", "SKCAPSTONE_HOME", "SKMEMORY_READER",
+)
+_MEMORY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{2,127}")
 
-    store = MemoryStore()
-    base = get_agent_paths()["base"] / "memory"
-    ids: set = set()
-    loaded = []
+
+class SkmemoryCliError(RuntimeError):
+    """The skmemory CLI is missing or failed: the gate refuses, the lesson is not stored."""
+
+
+def _configured_bin() -> str:
+    env = os.environ.get(SKMEMORY_BIN_ENV, "").strip()
+    if env:
+        return env
+    try:
+        from agent import curator
+
+        return str(curator._load_config().get("skmemory_bin") or "").strip()
+    except Exception:
+        return ""
+
+
+def skmemory_cli() -> str:
+    """Path of the skmemory CLI, or :class:`SkmemoryCliError` naming where it looked."""
+    configured = _configured_bin()
+    if configured:
+        path = Path(configured).expanduser()
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+        raise SkmemoryCliError(
+            f"skmemory CLI not found at {path} (from {SKMEMORY_BIN_ENV} or curator.skmemory_bin)"
+        )
+    found = shutil.which("skmemory")
+    if found:
+        return found
+    default = Path(DEFAULT_SKMEMORY_BIN).expanduser()
+    if default.is_file() and os.access(default, os.X_OK):
+        return str(default)
+    raise SkmemoryCliError(
+        f"skmemory CLI not found on PATH or at {DEFAULT_SKMEMORY_BIN}; set {SKMEMORY_BIN_ENV} "
+        "or curator.skmemory_bin"
+    )
+
+
+def _run_cli(binary: str, args: list) -> subprocess.CompletedProcess:
+    env = {k: os.environ[k] for k in _CLI_ENV_KEYS if k in os.environ}
+    try:
+        return subprocess.run(
+            [binary, "--no-vector", *args], capture_output=True, text=True,
+            timeout=CLI_TIMEOUT_SECONDS, env=env, stdin=subprocess.DEVNULL, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SkmemoryCliError(f"skmemory CLI failed to run: {type(exc).__name__}") from exc
+
+
+def _turn_reader() -> Optional[str]:
+    """The session scope's reader: None for the owner, else ``channel:<id>`` or ``@public``.
+    Unreadable scope fails closed to ``@public``."""
+    try:
+        from tools import session_scope
+
+        return session_scope.session_reader()
+    except Exception:
+        return "@public"
+
+
+def memory_resolver() -> Resolver:
+    """Read-only resolver over skmemory through its CLI, under the turn's reader. Memory ids
+    give prose (title + content); an id the reader may not see, or that does not exist, is
+    None. Only an exact id counts (no prefix match)."""
+    binary = skmemory_cli()
+    reader = _turn_reader()
 
     def resolve(sid: str):
-        mem = store.recall(sid)
-        if mem is not None:
-            return f"{mem.title}\n{mem.content}"
-        if not loaded:
-            ids.update(e["id"] for e in Ledger(base).events())
-            loaded.append(True)
-        return EXISTS_ONLY if sid in ids else None
+        if not _MEMORY_ID.fullmatch(sid):
+            return None
+        args = ["recall", "--exact", *(["--reader", reader] if reader else []), "--", sid]
+        proc = _run_cli(binary, args)
+        if proc.returncode == 1 and "not found" in (proc.stderr or "").lower():
+            return None
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout or "").strip()[-200:]
+            raise SkmemoryCliError(f"skmemory recall exit {proc.returncode}: {tail}")
+        try:
+            mem = json.loads(proc.stdout)
+        except ValueError as exc:
+            raise SkmemoryCliError("skmemory recall printed no JSON") from exc
+        if not isinstance(mem, dict) or mem.get("id") != sid:
+            return None
+        return f"{mem.get('title', '')}\n{mem.get('content', '')}"
 
     return resolve
 
@@ -180,36 +272,48 @@ def default_resolver() -> Resolver:
     return resolve
 
 
-def default_writer() -> Callable[..., Optional[str]]:
-    from skmemory.store import MemoryStore
+def _source_ref() -> str:
+    try:
+        from gateway.session_context import get_session_env
 
-    store = MemoryStore()
+        sid = get_session_env("HERMES_SESSION_ID", "").strip()
+    except Exception:
+        sid = ""
+    if sid:
+        return f"hermes-curator:session:{sid}"
+    return f"hermes-curator:run:{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
+
+
+def default_writer() -> Callable[..., Optional[str]]:
+    """Store an accepted lesson with ``skmemory snapshot`` and return its id."""
+    binary = skmemory_cli()
 
     def write(
         *, skill: str, action: str, text: str, quote: str, cited_ids: list
     ) -> Optional[str]:
-        mem = store.snapshot(
-            f"Skill lesson: {skill}",
-            f"{text[:2000]}\n\nQuote: {quote}",
-            tags=["lesson", "hermes-curator", f"skill:{skill}"],
-            source="hermes-curator",
-            kind="procedure",
-            outcome="lesson",
-            metadata={
-                "cited_ids": list(cited_ids),
-                "quote": quote,
-                "skill": skill,
-                "action": action,
-            },
-        )
-        if (mem.kind, mem.outcome) != ("procedure", "lesson"):
+        meta = {"cited_ids": list(cited_ids), "quote": quote, "skill": skill, "action": action}
+        args = [
+            "snapshot", "--layer", "mid-term",
+            "--tags", f"lesson,hermes-curator,skill:{skill}",
+            "--source", "hermes-curator", "--source-tier", "self-generated",
+            "--source-ref", _source_ref(), "--kind", "procedure", "--outcome", "lesson",
+            "--metadata-json", json.dumps(meta), "--json",
+            "--", f"Skill lesson: {skill}", f"{text[:2000]}\n\nQuote: {quote}",
+        ]
+        proc = _run_cli(binary, args)
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout or "").strip()[-200:]
+            raise SkmemoryCliError(f"skmemory snapshot exit {proc.returncode}: {tail}")
+        try:
+            out = json.loads(proc.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError) as exc:
+            raise SkmemoryCliError("skmemory snapshot printed no JSON") from exc
+        if (out.get("kind"), out.get("outcome")) != ("procedure", "lesson"):
             logger.warning(
                 "skill citation gate: lesson %s stored as kind=%s outcome=%s",
-                mem.id,
-                mem.kind,
-                mem.outcome,
+                out.get("id"), out.get("kind"), out.get("outcome"),
             )
-        return mem.id
+        return out.get("id")
 
     return write
 
@@ -251,6 +355,8 @@ def review(
             return base(sid)
 
         verdict = check(source_ids, quote, resolve)
+    except SkmemoryCliError as exc:  # fail closed, and say why
+        verdict = Verdict(False, f"cited sources could not be read: {exc}")
     except Exception as exc:  # fail closed
         verdict = Verdict(
             False, f"cited sources could not be read ({type(exc).__name__})"
@@ -282,7 +388,15 @@ def review(
 def record_lesson(
     action: str, name: str, verdict: Verdict, quote: str, text: str
 ) -> None:
-    """Store the accepted lesson in skmemory and count it. Never breaks the write that succeeded."""
+    """Store the accepted lesson in skmemory and count it. Never breaks the write that succeeded.
+    Owner turns only: a non-owner turn never writes memory, so its lesson is counted and logged
+    as not stored."""
+    if _turn_reader() is not None:
+        _bump("lessons_not_stored_non_owner")
+        logger.warning(
+            "skill citation gate: lesson for %s accepted but not stored (non-owner turn)", name
+        )
+        return
     try:
         default_writer()(
             skill=name,
@@ -292,7 +406,11 @@ def record_lesson(
             cited_ids=list(verdict.cited_ids),
         )
         _bump("accepted_lessons")
+    except SkmemoryCliError as exc:
+        _bump("lessons_not_stored")
+        logger.error("skill citation gate: lesson for %s accepted but not stored: %s", name, exc)
     except Exception:
+        _bump("lessons_not_stored")
         logger.warning(
             "skill citation gate: lesson for %s accepted but not stored",
             name,
