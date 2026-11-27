@@ -2002,6 +2002,12 @@ DEFAULT_CONFIG = {
                 "show_tip", "desktop_project", "close_terminal",
                 "set_theme", "read_terminal", "read_window_below", "focus_pane",
             ],
+            # Tool names or toolset names that never defer, whatever ``defer`` says (sk fork).
+            # For plugin tools that must stay on the direct surface, e.g. a platform plugin's
+            # guest toolsets (a guest turn cannot run tool_search / tool_call):
+            # [nctalk-calls, nctalk-threads, nctalk-polls, nctalk-server, nctalk-room-read,
+            #  nctalk-workspace]. Default [] changes nothing.
+            "never_defer": [],
         },
         # Remote connector discovery/lifecycle through the Nous tool gateway.
         # The flag is the user's off switch; availability additionally requires

@@ -118,6 +118,9 @@ tools:
       - process_manage
       - cronjob_manage
       - manage_catalog
+    never_defer:        # tool or toolset names that always stay eager (sk fork)
+      - nctalk-room-read
+      - nctalk-workspace
 ```
 
 The default `defer` list also includes the selected desktop GUI helpers listed
@@ -133,6 +136,7 @@ shipped curated set; the runtime fallback uses the same value.
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
 | `defer` | Curated list | Tool names replaced by the bridge by default. The list may include cold built-in tools as well as MCP/plugin tools; an explicit list replaces it, and `[]` disables deferral for every tool. |
+| `never_defer` | `[]` | Tool names or toolset names that never defer, whatever `defer` says (sk fork). `defer` can only add tools to deferral; this is how a plugin's tools stay on the direct surface, for example a platform plugin's guest toolsets, since a guest turn cannot run `tool_search` / `tool_call`. Proposed upstream in NousResearch/hermes-agent#160125. |
 
 Per-call array caps are internal safety bounds, not configuration. Over-cap
 calls return an error so the model can retry with a smaller batch.
